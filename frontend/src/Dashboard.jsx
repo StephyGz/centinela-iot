@@ -533,7 +533,8 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
             <div>
               <h2 className="text-lg font-semibold">Alertas vía WhatsApp (CallMeBot)</h2>
               <p className="text-xs text-slate-400">
-                Teléfono configurado: <span className="text-slate-200 font-mono">{WHATSAPP_PHONE}</span>
+                Teléfono configurado:{' '}
+                <span className="text-slate-200 font-mono">{sucursalActual.telefono_alerta || WHATSAPP_PHONE}</span>
               </p>
             </div>
             <button
