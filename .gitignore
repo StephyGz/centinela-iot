@@ -8,10 +8,9 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
-# Variables de entorno (NUNCA subir)
-.env
-.env.*
-!.env.example
+# NOTA: el archivo .env SI se sube a propósito (proyecto académico compartido).
+# Solo contiene claves públicas (publishable key, teléfono y API key de CallMeBot).
+# NUNCA agregues aquí la secret key ni la contraseña de la base de datos.
 
 # C++ / Arduino / PlatformIO
 *.o

@@ -15,10 +15,18 @@ const TEMP_MIN = 2.0;
 const TEMP_MAX = 8.0;
 const REFRESCO_MS = 5000;
 
-// Respaldo por si la tabla sucursales aún no se ha creado.
+// Respaldo por si las tablas de Supabase aún no se han creado.
 const SUCURSALES_RESPALDO = [
-  { id: 1, nombre: 'Bodegón Central' },
-  { id: 2, nombre: 'Farmacia Norte' },
+  { id: 1, nombre: 'Bodegón Central', telefono_alerta: WHATSAPP_PHONE, api_key_whatsapp: CALLMEBOT_API_KEY },
+  { id: 2, nombre: 'Farmacia Norte', telefono_alerta: WHATSAPP_PHONE, api_key_whatsapp: CALLMEBOT_API_KEY },
+];
+
+const LECTURAS_DEMO = [
+  { id: 1, sucursal_id: 1, temperatura: 4.2, humedad: 55.0, hay_luz: true, created_at: new Date(Date.now() - 240000).toISOString() },
+  { id: 2, sucursal_id: 1, temperatura: 4.8, humedad: 56.0, hay_luz: true, created_at: new Date(Date.now() - 180000).toISOString() },
+  { id: 3, sucursal_id: 1, temperatura: 5.1, humedad: 57.0, hay_luz: true, created_at: new Date(Date.now() - 120000).toISOString() },
+  { id: 4, sucursal_id: 1, temperatura: 5.6, humedad: 58.0, hay_luz: true, created_at: new Date(Date.now() - 60000).toISOString() },
+  { id: 5, sucursal_id: 1, temperatura: 5.3, humedad: 57.5, hay_luz: true, created_at: new Date().toISOString() },
 ];
 
 const hora = (iso) =>
@@ -30,13 +38,13 @@ function Tarjeta({ titulo, valor, detalle, ok, icono }) {
     ? 'border-emerald-500/60 bg-emerald-500/10 text-emerald-400'
     : 'border-red-500/60 bg-red-500/10 text-red-400';
   return (
-    <div className={`rounded-2xl border-2 p-6 ${color}`}>
+    <div className={`rounded-2xl border-2 p-6 transition-colors ${color}`}>
       <div className="flex items-center justify-between text-slate-300">
         <span className="font-medium">{titulo}</span>
         <span className="text-2xl">{icono}</span>
       </div>
-      <div className="text-4xl font-extrabold mt-3">{valor}</div>
-      <div className="text-sm mt-2 opacity-90">{detalle}</div>
+      <div className="text-3xl sm:text-4xl font-extrabold mt-3">{valor}</div>
+      <div className="text-sm mt-2 opacity-90 font-medium">{detalle}</div>
     </div>
   );
 }
@@ -48,10 +56,11 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
   const [eventos, setEventos] = useState([]);
   const [error, setError] = useState('');
   const [enviando, setEnviando] = useState(false);
+  const [simulando, setSimulando] = useState(false);
   const [aviso, setAviso] = useState('');
   const [ultimaAct, setUltimaAct] = useState(null);
 
-  // Cargar sucursales una vez
+  // Cargar sucursales al iniciar
   useEffect(() => {
     supabase
       .from('sucursales')
@@ -77,8 +86,12 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
         .order('created_at', { ascending: false })
         .limit(15),
     ]);
+
     if (lec.error) {
-      setError('No se pudieron leer los datos: ' + lec.error.message + ' (¿ejecutaste supabase_schema.sql?)');
+      setError(
+        'Falta crear las tablas en Supabase: abre Supabase > SQL Editor, pega supabase_schema.sql y pulsa RUN. (Mostrando datos de vista previa).'
+      );
+      setLecturas(( prev ) => (prev.length ? prev : LECTURAS_DEMO));
     } else {
       setError('');
       setLecturas((lec.data || []).slice().reverse());
@@ -91,22 +104,27 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
   useEffect(() => {
     cargarDatos();
     const t = setInterval(cargarDatos, REFRESCO_MS);
-    const canal = supabase
-      .channel('centinela-' + sucursalId)
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'lecturas_sensor' }, cargarDatos)
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'eventos_alerta' }, cargarDatos)
-      .subscribe();
+    let canal = null;
+    try {
+      canal = supabase
+        .channel(`centinela-${sucursalId}-${Date.now()}-${Math.random().toString(36).slice(2)}`)
+        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'lecturas_sensor' }, () => cargarDatos())
+        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'eventos_alerta' }, () => cargarDatos())
+        .subscribe();
+    } catch (e) {
+      console.warn('Realtime no disponible, se usa refresco cada 5 s', e);
+    }
     return () => {
       clearInterval(t);
-      supabase.removeChannel(canal);
+      if (canal) supabase.removeChannel(canal);
     };
   }, [cargarDatos, sucursalId]);
 
   const ultima = lecturas.length ? lecturas[lecturas.length - 1] : null;
-  const temp = ultima ? Number(ultima.temperatura) : null;
+  const temp = ultima && ultima.temperatura !== null ? Number(ultima.temperatura) : null;
   const tempOk = temp !== null && temp >= TEMP_MIN && temp <= TEMP_MAX;
   const hayLuz = ultima ? ultima.hay_luz !== false : true;
-  const emergencia = ultima && (ultima.hay_luz === false || temp > TEMP_MAX);
+  const emergencia = Boolean(ultima) && (ultima.hay_luz === false || (temp !== null && temp > TEMP_MAX));
   const sucursalActual = sucursales.find((s) => s.id === sucursalId) || SUCURSALES_RESPALDO[0];
 
   const datosGrafica = lecturas.map((l) => ({
@@ -117,43 +135,57 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
   const enviarPruebaWhatsApp = async () => {
     setEnviando(true);
     setAviso('');
-    const telefono = sucursalActual.telefono_alerta || WHATSAPP_PHONE;
-    const apikey = sucursalActual.api_key_whatsapp || CALLMEBOT_API_KEY;
-    const texto =
-      `Prueba Centinela IoT - ${sucursalActual.nombre}` +
-      (temp !== null ? ` | Temp: ${temp.toFixed(1)}C | Luz: ${hayLuz ? 'SI' : 'NO'}` : '');
-    const url =
-      'https://api.callmebot.com/whatsapp.php?phone=' +
-      encodeURIComponent(telefono) +
-      '&text=' +
-      encodeURIComponent(texto) +
-      '&apikey=' +
-      encodeURIComponent(apikey);
+    const telefono = (sucursalActual.telefono_alerta || WHATSAPP_PHONE).trim();
+    const apikey = (sucursalActual.api_key_whatsapp || CALLMEBOT_API_KEY).trim();
+    const texto = 'Prueba Centinela IoT';
+    const url = `https://api.callmebot.com/whatsapp.php?phone=${telefono}&text=Prueba+Centinela+IoT&apikey=${apikey}`;
 
     try {
-      // CallMeBot no envía cabeceras CORS: 'no-cors' permite que la petición salga igual.
       await fetch(url, { method: 'GET', mode: 'no-cors' });
-    } catch (e) {
-      // Respaldo: disparar la petición como imagen (tampoco sufre CORS).
+    } catch {
       new Image().src = url;
     }
 
-    const { error } = await supabase.from('eventos_alerta').insert({
+    const nuevoEvento = {
       sucursal_id: sucursalId,
       tipo_evento: 'PRUEBA_WHATSAPP',
-      mensaje_enviado: texto,
-    });
+      mensaje_enviado: `${texto} (${sucursalActual.nombre} -> ${telefono})`,
+    };
+
+    const { error: errInsert } = await supabase.from('eventos_alerta').insert(nuevoEvento);
     setEnviando(false);
-    setAviso(
-      error
-        ? '⚠️ WhatsApp enviado, pero no se pudo guardar el registro: ' + error.message
-        : '✅ Alerta enviada a ' + telefono + '. Revisa WhatsApp en unos segundos.'
-    );
-    cargarDatos();
+
+    if (errInsert) {
+      setEventos((prev) => [{ id: Date.now(), created_at: new Date().toISOString(), ...nuevoEvento }, ...prev]);
+      setAviso(`✅ Solicitud de WhatsApp enviada a ${telefono}. (Ejecuta supabase_schema.sql para guardar en BD).`);
+    } else {
+      setAviso(`✅ Alerta de prueba enviada a WhatsApp (${telefono}) y registrada en la base de datos.`);
+      cargarDatos();
+    }
+  };
+
+  const simularLectura = async (modo) => {
+    setSimulando(true);
+    setAviso('');
+    const nueva = {
+      sucursal_id: sucursalId,
+      temperatura: modo === 'calor' ? 9.6 : Number((4.2 + Math.random() * 1.8).toFixed(1)),
+      humedad: Number((55 + Math.random() * 5).toFixed(1)),
+      hay_luz: modo !== 'apagon',
+    };
+    const { error: errSim } = await supabase.from('lecturas_sensor').insert(nueva);
+    setSimulando(false);
+    if (errSim) {
+      setLecturas((prev) => [...prev.slice(-19), { id: Date.now(), created_at: new Date().toISOString(), ...nueva }]);
+      setAviso('🧪 Simulación aplicada en vista previa local (ejecuta supabase_schema.sql para guardarla en Supabase).');
+    } else {
+      setAviso('🧪 Lectura simulada insertada en Supabase correctamente.');
+      cargarDatos();
+    }
   };
 
   return (
-    <div className="min-h-screen">
+    <div className="min-h-screen bg-slate-950 text-slate-100">
       {/* Barra superior */}
       <header className="border-b border-slate-800 bg-slate-900/80 backdrop-blur sticky top-0 z-10">
         <div className="max-w-6xl mx-auto px-4 py-3 flex flex-wrap items-center gap-3 justify-between">
@@ -162,8 +194,11 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
             <h1 className="text-xl font-bold text-cyan-400">Centinela IoT</h1>
           </div>
           <div className="flex items-center gap-3">
-            <label className="text-sm text-slate-400">Sucursal:</label>
+            <label htmlFor="selector-sucursal" className="text-sm text-slate-400">
+              Sucursal:
+            </label>
             <select
+              id="selector-sucursal"
               value={sucursalId}
               onChange={(e) => setSucursalId(Number(e.target.value))}
               className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 outline-none focus:border-cyan-500"
@@ -177,7 +212,10 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
             <span className="hidden sm:inline text-xs px-2 py-1 rounded bg-slate-800 text-slate-400">
               {etiquetaUsuario}
             </span>
-            <button onClick={onSalir} className="text-sm px-3 py-2 rounded-lg border border-slate-700 hover:bg-slate-800">
+            <button
+              onClick={onSalir}
+              className="text-sm px-3 py-2 rounded-lg border border-slate-700 hover:bg-slate-800"
+            >
               Salir
             </button>
           </div>
@@ -186,53 +224,62 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
 
       <main className="max-w-6xl mx-auto px-4 py-6 space-y-6">
         {error && (
-          <div className="rounded-xl border border-amber-500/50 bg-amber-500/10 text-amber-300 p-4 text-sm">{error}</div>
+          <div className="rounded-xl border border-amber-500/50 bg-amber-500/10 text-amber-300 p-4 text-sm">
+            ⚠️ {error}
+          </div>
         )}
 
-        {/* Alerta de emergencia */}
+        {/* Alerta Visual de Apagón o Temperatura Fuera de Rango */}
         {emergencia && (
-          <div className="rounded-2xl border-2 border-red-500 bg-red-600/20 p-5 animate-pulse">
-            <p className="text-2xl font-extrabold text-red-400">
+          <div className="rounded-2xl border-2 border-red-500 bg-red-600/20 p-5 animate-pulse shadow-lg shadow-red-600/20">
+            <p className="text-xl sm:text-2xl font-extrabold text-red-400">
               🚨 ¡ALERTA DE EMERGENCIA! Corte de luz o temperatura fuera de rango
             </p>
             <p className="text-red-200 mt-1 text-sm">
-              {sucursalActual.nombre} — {!hayLuz && 'Sin suministro eléctrico. '}
-              {temp > TEMP_MAX && `Temperatura ${temp.toFixed(1)} °C supera ${TEMP_MAX} °C.`}
+              {sucursalActual.nombre} — {!hayLuz && 'SIN LUZ (Usando Batería Mini UPS). '}
+              {temp !== null && temp > TEMP_MAX && `Temperatura actual (${temp.toFixed(1)} °C) supera el límite de ${TEMP_MAX.toFixed(1)} °C.`}
             </p>
           </div>
         )}
 
-        {/* Tarjetas */}
+        {/* 3 Tarjetas Principales */}
         <section className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <Tarjeta
-            titulo="Temperatura"
+            titulo="Temperatura (°C)"
             icono="🌡️"
             valor={temp !== null ? `${temp.toFixed(1)} °C` : '--'}
-            detalle={tempOk ? 'En rango seguro (2 °C – 8 °C)' : temp === null ? 'Sin datos' : 'FUERA DE RANGO'}
+            detalle={
+              temp === null
+                ? 'Esperando lecturas...'
+                : tempOk
+                ? 'Rango seguro (2 °C a 8 °C)'
+                : '¡FUERA DE RANGO! (2 °C a 8 °C)'
+            }
             ok={temp === null || tempOk}
           />
           <Tarjeta
-            titulo="Humedad"
+            titulo="Humedad (%)"
             icono="💧"
-            valor={ultima ? `${Number(ultima.humedad).toFixed(0)} %` : '--'}
-            detalle="Humedad relativa"
+            valor={ultima && ultima.humedad !== null ? `${Number(ultima.humedad).toFixed(0)} %` : '--'}
+            detalle="Humedad relativa de la cava"
             ok={true}
           />
           <Tarjeta
             titulo="Estado Eléctrico"
             icono={hayLuz ? '⚡' : '🔋'}
-            valor={hayLuz ? 'CON LUZ' : 'SIN LUZ'}
-            detalle={hayLuz ? 'Red Normal' : 'Usando Batería Mini UPS'}
+            valor={hayLuz ? 'CON LUZ - Red Normal' : 'SIN LUZ - Usando Batería Mini UPS'}
+            detalle={hayLuz ? 'Suministro eléctrico estable' : 'Apagón detectado por relé físico'}
             ok={hayLuz}
           />
         </section>
 
-        {/* Gráfica */}
+        {/* Gráfica Simple de Temperatura */}
         <section className="rounded-2xl border border-slate-800 bg-slate-900 p-5">
-          <div className="flex justify-between items-center mb-4">
+          <div className="flex flex-wrap justify-between items-center gap-2 mb-4">
             <h2 className="text-lg font-semibold">Temperatura — últimas 20 lecturas</h2>
-            <span className="text-xs text-slate-500">
-              {ultimaAct ? `Actualizado ${ultimaAct.toLocaleTimeString('es-VE')}` : 'Cargando...'}
+            <span className="text-xs text-slate-400 text-right">
+              {ultima ? `Última lectura: ${fechaHora(ultima.created_at)}` : 'Sin lecturas'}
+              {ultimaAct ? ` · Refresco: ${ultimaAct.toLocaleTimeString('es-VE')}` : ''}
             </span>
           </div>
           <div className="h-72">
@@ -241,50 +288,108 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
                 <LineChart data={datosGrafica} margin={{ top: 5, right: 20, left: 0, bottom: 5 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
                   <XAxis dataKey="hora" stroke="#64748b" fontSize={12} />
-                  <YAxis stroke="#64748b" fontSize={12} domain={[0, 'auto']} unit="°" />
+                  <YAxis stroke="#64748b" fontSize={12} domain={[0, 12]} unit="°C" />
                   <Tooltip
                     contentStyle={{ background: '#0f172a', border: '1px solid #334155', borderRadius: 8 }}
                     formatter={(v) => [`${v} °C`, 'Temperatura']}
                   />
-                  <ReferenceLine y={TEMP_MAX} stroke="#ef4444" strokeDasharray="4 4" label={{ value: '8 °C', fill: '#ef4444', fontSize: 12 }} />
-                  <ReferenceLine y={TEMP_MIN} stroke="#3b82f6" strokeDasharray="4 4" label={{ value: '2 °C', fill: '#3b82f6', fontSize: 12 }} />
-                  <Line type="monotone" dataKey="temperatura" stroke="#22d3ee" strokeWidth={3} dot={{ r: 3 }} isAnimationActive={false} />
+                  <ReferenceLine
+                    y={TEMP_MAX}
+                    stroke="#ef4444"
+                    strokeDasharray="4 4"
+                    label={{ value: 'Máx 8 °C', fill: '#ef4444', fontSize: 12 }}
+                  />
+                  <ReferenceLine
+                    y={TEMP_MIN}
+                    stroke="#3b82f6"
+                    strokeDasharray="4 4"
+                    label={{ value: 'Mín 2 °C', fill: '#3b82f6', fontSize: 12 }}
+                  />
+                  <Line
+                    type="monotone"
+                    dataKey="temperatura"
+                    stroke="#22d3ee"
+                    strokeWidth={3}
+                    dot={{ r: 4, fill: '#22d3ee' }}
+                    isAnimationActive={false}
+                  />
                 </LineChart>
               </ResponsiveContainer>
             ) : (
-              <div className="h-full flex items-center justify-center text-slate-500">Sin lecturas para esta sucursal</div>
+              <div className="h-full flex items-center justify-center text-slate-500">
+                Sin lecturas para esta sucursal
+              </div>
             )}
           </div>
         </section>
 
-        {/* WhatsApp + historial */}
+        {/* Botón de Prueba de WhatsApp en Vivo + Tabla de Alertas + Simulador de Apoyo */}
         <section className="rounded-2xl border border-slate-800 bg-slate-900 p-5 space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <h2 className="text-lg font-semibold">Alertas por WhatsApp</h2>
+            <div>
+              <h2 className="text-lg font-semibold">Alertas vía WhatsApp (CallMeBot)</h2>
+              <p className="text-xs text-slate-400">
+                Teléfono configurado: <span className="text-slate-200 font-mono">{WHATSAPP_PHONE}</span>
+              </p>
+            </div>
             <button
               onClick={enviarPruebaWhatsApp}
               disabled={enviando}
-              className="px-5 py-3 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold disabled:opacity-50"
+              className="px-5 py-3 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold transition shadow-lg shadow-emerald-500/20 disabled:opacity-50"
             >
               {enviando ? 'Enviando...' : '📲 Enviar Alerta de Prueba a WhatsApp'}
             </button>
           </div>
-          {aviso && <p className="text-sm text-slate-300">{aviso}</p>}
+
+          {/* Botones de prueba rápida para demostración */}
+          <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-800/80 text-xs">
+            <span className="text-slate-400 mr-1">🧪 Prueba rápida en panel:</span>
+            <button
+              type="button"
+              disabled={simulando}
+              onClick={() => simularLectura('normal')}
+              className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-emerald-300 border border-slate-700"
+            >
+              ✅ Simular Normal (2°C–8°C, Con Luz)
+            </button>
+            <button
+              type="button"
+              disabled={simulando}
+              onClick={() => simularLectura('apagon')}
+              className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-red-300 border border-slate-700"
+            >
+              🔌 Simular Corte de Luz
+            </button>
+            <button
+              type="button"
+              disabled={simulando}
+              onClick={() => simularLectura('calor')}
+              className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-amber-300 border border-slate-700"
+            >
+              🌡️ Simular Temp. Alta (&gt;8°C)
+            </button>
+          </div>
+
+          {aviso && (
+            <div className="rounded-lg bg-slate-800/90 border border-slate-700 px-4 py-2.5 text-sm text-slate-200">
+              {aviso}
+            </div>
+          )}
 
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead className="text-slate-400 border-b border-slate-800">
                 <tr>
-                  <th className="text-left py-2 pr-4">Fecha</th>
-                  <th className="text-left py-2 pr-4">Tipo</th>
-                  <th className="text-left py-2">Mensaje</th>
+                  <th className="text-left py-2 pr-4">Fecha y Hora</th>
+                  <th className="text-left py-2 pr-4">Tipo de Evento</th>
+                  <th className="text-left py-2">Mensaje Enviado</th>
                 </tr>
               </thead>
               <tbody>
                 {eventos.length === 0 && (
                   <tr>
                     <td colSpan={3} className="py-4 text-center text-slate-500">
-                      Aún no hay alertas registradas
+                      Aún no hay alertas registradas. Pulsa &ldquo;Enviar Alerta de Prueba a WhatsApp&rdquo; para probar.
                     </td>
                   </tr>
                 )}
@@ -311,7 +416,7 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
         </section>
 
         <footer className="text-center text-xs text-slate-600 pb-4">
-          Centinela IoT · Cadena de frío 2 °C – 8 °C · Refresco automático cada 5 s
+          Centinela IoT · Cadena de frío 2 °C – 8 °C · Actualización automática cada 5 s + Realtime
         </footer>
       </main>
     </div>
