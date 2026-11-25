@@ -63,6 +63,39 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
   const [nuevoNombreNodo, setNuevoNombreNodo] = useState('');
   const [nuevoTelefonoNodo, setNuevoTelefonoNodo] = useState(WHATSAPP_PHONE);
   const [creandoNodo, setCreandoNodo] = useState(false);
+  const [tempMin, setTempMin] = useState(TEMP_MIN);
+  const [tempMax, setTempMax] = useState(TEMP_MAX);
+
+  // Cargar rango personalizado de la nevera/ESP32 seleccionada
+  useEffect(() => {
+    try {
+      const guardado = localStorage.getItem(`centinela_rango_${sucursalId}`);
+      if (guardado) {
+        const { min, max } = JSON.parse(guardado);
+        if (Number.isFinite(min) && Number.isFinite(max) && min < max) {
+          setTempMin(min);
+          setTempMax(max);
+          return;
+        }
+      }
+    } catch {
+      // Ignorar errores de localStorage
+    }
+    setTempMin(TEMP_MIN);
+    setTempMax(TEMP_MAX);
+  }, [sucursalId]);
+
+  const actualizarRango = (nuevoMin, nuevoMax) => {
+    setTempMin(nuevoMin);
+    setTempMax(nuevoMax);
+    if (Number.isFinite(nuevoMin) && Number.isFinite(nuevoMax) && nuevoMin < nuevoMax) {
+      try {
+        localStorage.setItem(`centinela_rango_${sucursalId}`, JSON.stringify({ min: nuevoMin, max: nuevoMax }));
+      } catch {
+        // Ignorar errores de localStorage
+      }
+    }
+  };
 
   const cargarSucursales = useCallback(async () => {
     const { data, error: errSuc } = await supabase
@@ -169,9 +202,13 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
 
   const ultima = lecturas.length ? lecturas[lecturas.length - 1] : null;
   const temp = ultima && ultima.temperatura !== null ? Number(ultima.temperatura) : null;
-  const tempOk = temp !== null && temp >= TEMP_MIN && temp <= TEMP_MAX;
+  const rangoValido = Number.isFinite(tempMin) && Number.isFinite(tempMax) && tempMin < tempMax;
+  const minEfectivo = rangoValido ? tempMin : TEMP_MIN;
+  const maxEfectivo = rangoValido ? tempMax : TEMP_MAX;
+  const tempOk = temp !== null && temp >= minEfectivo && temp <= maxEfectivo;
   const hayLuz = ultima ? ultima.hay_luz !== false : true;
-  const emergencia = Boolean(ultima) && (ultima.hay_luz === false || (temp !== null && temp > TEMP_MAX));
+  const emergencia =
+    Boolean(ultima) && (ultima.hay_luz === false || (temp !== null && (temp > maxEfectivo || temp < minEfectivo)));
   const sucursalActual = sucursales.find((s) => s.id === sucursalId) || SUCURSALES_RESPALDO[0];
   const codigoNodo = `ESP32-${String(sucursalActual.id).padStart(2, '0')}`;
 
@@ -179,6 +216,9 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
     hora: hora(l.created_at),
     temperatura: Number(l.temperatura),
   }));
+  const valoresGrafica = datosGrafica.map((d) => d.temperatura).filter((v) => Number.isFinite(v));
+  const yMin = Math.floor(Math.min(minEfectivo, ...(valoresGrafica.length ? valoresGrafica : [minEfectivo])) - 2);
+  const yMax = Math.ceil(Math.max(maxEfectivo, ...(valoresGrafica.length ? valoresGrafica : [maxEfectivo])) + 2);
 
   const enviarPruebaWhatsApp = async () => {
     setEnviando(true);
@@ -225,9 +265,10 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
   const simularLectura = async (modo) => {
     setSimulando(true);
     setAviso('');
+    const tempNormal = minEfectivo + (maxEfectivo - minEfectivo) * (0.35 + Math.random() * 0.3);
     const nueva = {
       sucursal_id: sucursalId,
-      temperatura: modo === 'calor' ? 9.6 : Number((4.2 + Math.random() * 1.8).toFixed(1)),
+      temperatura: modo === 'calor' ? Number((maxEfectivo + 1.6).toFixed(1)) : Number(tempNormal.toFixed(1)),
       humedad: Number((55 + Math.random() * 5).toFixed(1)),
       hay_luz: modo !== 'apagon',
     };
@@ -354,7 +395,8 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
             </p>
             <p className="text-red-200 mt-1 text-sm">
               {sucursalActual.nombre} — {!hayLuz && 'SIN LUZ (Usando Batería Mini UPS). '}
-              {temp !== null && temp > TEMP_MAX && `Temperatura actual (${temp.toFixed(1)} °C) supera el límite de ${TEMP_MAX.toFixed(1)} °C.`}
+              {temp !== null && temp > maxEfectivo && `Temperatura actual (${temp.toFixed(1)} °C) supera el máximo de ${maxEfectivo.toFixed(1)} °C.`}
+              {temp !== null && temp < minEfectivo && `Temperatura actual (${temp.toFixed(1)} °C) está por debajo del mínimo de ${minEfectivo.toFixed(1)} °C.`}
             </p>
           </div>
         )}
@@ -369,8 +411,8 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
               temp === null
                 ? 'Esperando lecturas...'
                 : tempOk
-                ? 'Rango seguro (2 °C a 8 °C)'
-                : '¡FUERA DE RANGO! (2 °C a 8 °C)'
+                ? `Rango seguro (${minEfectivo.toFixed(1)} °C a ${maxEfectivo.toFixed(1)} °C)`
+                : `¡FUERA DE RANGO! (${minEfectivo.toFixed(1)} °C a ${maxEfectivo.toFixed(1)} °C)`
             }
             ok={temp === null || tempOk}
           />
@@ -390,37 +432,82 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
           />
         </section>
 
-        {/* Gráfica Simple de Temperatura */}
+        {/* Gráfica Simple de Temperatura + Configuración de Rango */}
         <section className="rounded-2xl border border-slate-800 bg-slate-900 p-5">
-          <div className="flex flex-wrap justify-between items-center gap-2 mb-4">
-            <h2 className="text-lg font-semibold">Temperatura — últimas 20 lecturas</h2>
-            <span className="text-xs text-slate-400 text-right">
-              {ultima ? `Última lectura: ${fechaHora(ultima.created_at)}` : 'Sin lecturas'}
-              {ultimaAct ? ` · Refresco: ${ultimaAct.toLocaleTimeString('es-VE')}` : ''}
-            </span>
+          <div className="flex flex-wrap justify-between items-center gap-3 mb-4">
+            <div>
+              <h2 className="text-lg font-semibold">Temperatura — últimas 20 lecturas</h2>
+              <span className="text-xs text-slate-400">
+                {ultima ? `Última lectura: ${fechaHora(ultima.created_at)}` : 'Sin lecturas'}
+                {ultimaAct ? ` · Refresco: ${ultimaAct.toLocaleTimeString('es-VE')}` : ''}
+              </span>
+            </div>
+
+            {/* Rango personalizado por usuario/nevera */}
+            <div className="flex flex-wrap items-center gap-2 bg-slate-950/80 border border-slate-800 rounded-xl px-3 py-2 text-xs">
+              <span className="text-slate-400 font-medium">⚙️ Rango seguro:</span>
+              <label className="flex items-center gap-1 text-blue-300">
+                Mín
+                <input
+                  type="number"
+                  step="0.5"
+                  value={Number.isFinite(tempMin) ? tempMin : ''}
+                  onChange={(e) => actualizarRango(e.target.value === '' ? NaN : Number(e.target.value), tempMax)}
+                  className="w-16 px-2 py-1 rounded bg-slate-800 border border-slate-700 text-slate-100 text-center font-mono outline-none focus:border-cyan-500"
+                />
+                °C
+              </label>
+              <span className="text-slate-600">—</span>
+              <label className="flex items-center gap-1 text-red-300">
+                Máx
+                <input
+                  type="number"
+                  step="0.5"
+                  value={Number.isFinite(tempMax) ? tempMax : ''}
+                  onChange={(e) => actualizarRango(tempMin, e.target.value === '' ? NaN : Number(e.target.value))}
+                  className="w-16 px-2 py-1 rounded bg-slate-800 border border-slate-700 text-slate-100 text-center font-mono outline-none focus:border-cyan-500"
+                />
+                °C
+              </label>
+              {(minEfectivo !== TEMP_MIN || maxEfectivo !== TEMP_MAX) && (
+                <button
+                  type="button"
+                  onClick={() => actualizarRango(TEMP_MIN, TEMP_MAX)}
+                  className="ml-1 px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700"
+                  title="Restablecer 2 °C a 8 °C"
+                >
+                  ↺ 2–8 °C
+                </button>
+              )}
+            </div>
           </div>
+          {!rangoValido && (
+            <p className="text-xs text-amber-400 mb-2">
+              ⚠️ El mínimo debe ser menor que el máximo (usando 2.0 °C – 8.0 °C temporalmente).
+            </p>
+          )}
           <div className="h-72">
             {datosGrafica.length ? (
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={datosGrafica} margin={{ top: 5, right: 20, left: 0, bottom: 5 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
                   <XAxis dataKey="hora" stroke="#64748b" fontSize={12} />
-                  <YAxis stroke="#64748b" fontSize={12} domain={[0, 12]} unit="°C" />
+                  <YAxis stroke="#64748b" fontSize={12} domain={[yMin, yMax]} unit="°C" />
                   <Tooltip
                     contentStyle={{ background: '#0f172a', border: '1px solid #334155', borderRadius: 8 }}
                     formatter={(v) => [`${v} °C`, 'Temperatura']}
                   />
                   <ReferenceLine
-                    y={TEMP_MAX}
+                    y={maxEfectivo}
                     stroke="#ef4444"
                     strokeDasharray="4 4"
-                    label={{ value: 'Máx 8 °C', fill: '#ef4444', fontSize: 12 }}
+                    label={{ value: `Máx ${maxEfectivo} °C`, fill: '#ef4444', fontSize: 12 }}
                   />
                   <ReferenceLine
-                    y={TEMP_MIN}
+                    y={minEfectivo}
                     stroke="#3b82f6"
                     strokeDasharray="4 4"
-                    label={{ value: 'Mín 2 °C', fill: '#3b82f6', fontSize: 12 }}
+                    label={{ value: `Mín ${minEfectivo} °C`, fill: '#3b82f6', fontSize: 12 }}
                   />
                   <Line
                     type="monotone"
