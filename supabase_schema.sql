@@ -30,13 +30,9 @@ CREATE TABLE lecturas_sensor (
   created_at  TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- Lecturas iniciales solo para el nodo demo "Farmacia Norte" (id = 2);
+-- "Bodegón Central" (id = 1) queda limpio para recibir lecturas reales del ESP32 físico.
 INSERT INTO lecturas_sensor (sucursal_id, temperatura, humedad, hay_luz, created_at) VALUES
-  (1, 4.2, 55.0, TRUE, NOW() - INTERVAL '4 minutes'),
-  (1, 4.8, 56.0, TRUE, NOW() - INTERVAL '3 minutes'),
-  (1, 5.1, 57.0, TRUE, NOW() - INTERVAL '2 minutes'),
-  (1, 5.6, 58.0, TRUE, NOW() - INTERVAL '1 minutes'),
-  (1, 5.3, 57.5, TRUE, NOW()),
-  -- Lecturas extra para que "Farmacia Norte" tampoco salga vacía
   (2, 3.9, 60.0, TRUE, NOW() - INTERVAL '2 minutes'),
   (2, 4.4, 61.0, TRUE, NOW() - INTERVAL '1 minutes'),
   (2, 4.1, 60.5, TRUE, NOW());

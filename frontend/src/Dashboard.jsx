@@ -266,9 +266,15 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
     setSimulando(true);
     setAviso('');
     const tempNormal = minEfectivo + (maxEfectivo - minEfectivo) * (0.35 + Math.random() * 0.3);
+    const tempSimulada =
+      modo === 'calor'
+        ? Number((maxEfectivo + 1.6).toFixed(1))
+        : modo === 'frio'
+        ? Number((minEfectivo - 1.6).toFixed(1))
+        : Number(tempNormal.toFixed(1));
     const nueva = {
       sucursal_id: sucursalId,
-      temperatura: modo === 'calor' ? Number((maxEfectivo + 1.6).toFixed(1)) : Number(tempNormal.toFixed(1)),
+      temperatura: tempSimulada,
       humedad: Number((55 + Math.random() * 5).toFixed(1)),
       hay_luz: modo !== 'apagon',
     };
@@ -444,36 +450,76 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
             </div>
 
             {/* Rango personalizado por usuario/nevera */}
-            <div className="flex flex-wrap items-center gap-2 bg-slate-950/80 border border-slate-800 rounded-xl px-3 py-2 text-xs">
+            <div className="flex flex-wrap items-center gap-2.5 bg-slate-950/90 border border-slate-800 rounded-xl px-3.5 py-2 text-xs">
               <span className="text-slate-400 font-medium">⚙️ Rango seguro:</span>
-              <label className="flex items-center gap-1 text-blue-300">
-                Mín
-                <input
-                  type="number"
-                  step="0.5"
-                  value={Number.isFinite(tempMin) ? tempMin : ''}
-                  onChange={(e) => actualizarRango(e.target.value === '' ? NaN : Number(e.target.value), tempMax)}
-                  className="w-16 px-2 py-1 rounded bg-slate-800 border border-slate-700 text-slate-100 text-center font-mono outline-none focus:border-cyan-500"
-                />
-                °C
-              </label>
-              <span className="text-slate-600">—</span>
-              <label className="flex items-center gap-1 text-red-300">
-                Máx
-                <input
-                  type="number"
-                  step="0.5"
-                  value={Number.isFinite(tempMax) ? tempMax : ''}
-                  onChange={(e) => actualizarRango(tempMin, e.target.value === '' ? NaN : Number(e.target.value))}
-                  className="w-16 px-2 py-1 rounded bg-slate-800 border border-slate-700 text-slate-100 text-center font-mono outline-none focus:border-cyan-500"
-                />
-                °C
-              </label>
+
+              <div className="flex items-center gap-1.5">
+                <span className="text-blue-400 font-medium">Mín</span>
+                <div className="flex items-center rounded-lg bg-slate-900 border border-slate-700 overflow-hidden">
+                  <button
+                    type="button"
+                    onClick={() => actualizarRango(Number((minEfectivo - 0.5).toFixed(1)), maxEfectivo)}
+                    className="px-2 py-1 text-slate-300 hover:bg-slate-800 hover:text-white transition"
+                    title="Disminuir mínimo"
+                  >
+                    −
+                  </button>
+                  <input
+                    type="number"
+                    step="0.5"
+                    value={Number.isFinite(tempMin) ? tempMin : ''}
+                    onChange={(e) => actualizarRango(e.target.value === '' ? NaN : Number(e.target.value), tempMax)}
+                    className="w-12 py-1 bg-transparent text-slate-100 text-center font-mono outline-none"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => actualizarRango(Number((minEfectivo + 0.5).toFixed(1)), maxEfectivo)}
+                    className="px-2 py-1 text-slate-300 hover:bg-slate-800 hover:text-white transition"
+                    title="Aumentar mínimo"
+                  >
+                    +
+                  </button>
+                </div>
+                <span className="text-slate-400">°C</span>
+              </div>
+
+              <span className="text-slate-700">|</span>
+
+              <div className="flex items-center gap-1.5">
+                <span className="text-red-400 font-medium">Máx</span>
+                <div className="flex items-center rounded-lg bg-slate-900 border border-slate-700 overflow-hidden">
+                  <button
+                    type="button"
+                    onClick={() => actualizarRango(minEfectivo, Number((maxEfectivo - 0.5).toFixed(1)))}
+                    className="px-2 py-1 text-slate-300 hover:bg-slate-800 hover:text-white transition"
+                    title="Disminuir máximo"
+                  >
+                    −
+                  </button>
+                  <input
+                    type="number"
+                    step="0.5"
+                    value={Number.isFinite(tempMax) ? tempMax : ''}
+                    onChange={(e) => actualizarRango(tempMin, e.target.value === '' ? NaN : Number(e.target.value))}
+                    className="w-12 py-1 bg-transparent text-slate-100 text-center font-mono outline-none"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => actualizarRango(minEfectivo, Number((maxEfectivo + 0.5).toFixed(1)))}
+                    className="px-2 py-1 text-slate-300 hover:bg-slate-800 hover:text-white transition"
+                    title="Aumentar máximo"
+                  >
+                    +
+                  </button>
+                </div>
+                <span className="text-slate-400">°C</span>
+              </div>
+
               {(minEfectivo !== TEMP_MIN || maxEfectivo !== TEMP_MAX) && (
                 <button
                   type="button"
                   onClick={() => actualizarRango(TEMP_MIN, TEMP_MAX)}
-                  className="ml-1 px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700"
+                  className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition"
                   title="Restablecer 2 °C a 8 °C"
                 >
                   ↺ 2–8 °C
@@ -546,34 +592,52 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
             </button>
           </div>
 
-          {/* Botones de prueba rápida para demostración */}
-          <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-800/80 text-xs">
-            <span className="text-slate-400 mr-1">🧪 Prueba rápida en panel:</span>
-            <button
-              type="button"
-              disabled={simulando}
-              onClick={() => simularLectura('normal')}
-              className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-emerald-300 border border-slate-700"
-            >
-              ✅ Simular Normal (2°C–8°C, Con Luz)
-            </button>
-            <button
-              type="button"
-              disabled={simulando}
-              onClick={() => simularLectura('apagon')}
-              className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-red-300 border border-slate-700"
-            >
-              🔌 Simular Corte de Luz
-            </button>
-            <button
-              type="button"
-              disabled={simulando}
-              onClick={() => simularLectura('calor')}
-              className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-amber-300 border border-slate-700"
-            >
-              🌡️ Simular Temp. Alta (&gt;8°C)
-            </button>
-          </div>
+          {/* Controles de prueba solo en nodos demo (Farmacia Norte / nuevos); Bodegón Central recibe datos reales del ESP32 */}
+          {sucursalId === 1 ? (
+            <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-800/80 text-xs text-slate-400">
+              <span>
+                📡 <strong className="text-emerald-400">Telemetría física en vivo (ESP32-01):</strong> este nodo recibe
+                lecturas reales directamente del hardware.
+              </span>
+              <span className="text-slate-500">Para simulaciones de prueba, cambia a Farmacia Norte.</span>
+            </div>
+          ) : (
+            <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-800/80 text-xs">
+              <span className="text-slate-400 mr-1">🧪 Prueba rápida en panel:</span>
+              <button
+                type="button"
+                disabled={simulando}
+                onClick={() => simularLectura('normal')}
+                className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-emerald-300 border border-slate-700"
+              >
+                ✅ Simular Normal ({minEfectivo}°C–{maxEfectivo}°C, Con Luz)
+              </button>
+              <button
+                type="button"
+                disabled={simulando}
+                onClick={() => simularLectura('apagon')}
+                className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-red-300 border border-slate-700"
+              >
+                🔌 Simular Corte de Luz
+              </button>
+              <button
+                type="button"
+                disabled={simulando}
+                onClick={() => simularLectura('calor')}
+                className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-amber-300 border border-slate-700"
+              >
+                🌡️ Simular Temp. Alta (&gt;{maxEfectivo}°C)
+              </button>
+              <button
+                type="button"
+                disabled={simulando}
+                onClick={() => simularLectura('frio')}
+                className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-cyan-300 border border-slate-700"
+              >
+                ❄️ Simular Temp. Baja (&lt;{minEfectivo}°C)
+              </button>
+            </div>
+          )}
 
           {aviso && (
             <div className="rounded-lg bg-slate-800/90 border border-slate-700 px-4 py-2.5 text-sm text-slate-200">
