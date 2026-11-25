@@ -59,17 +59,64 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
   const [simulando, setSimulando] = useState(false);
   const [aviso, setAviso] = useState('');
   const [ultimaAct, setUltimaAct] = useState(null);
+  const [mostrarNuevoNodo, setMostrarNuevoNodo] = useState(false);
+  const [nuevoNombreNodo, setNuevoNombreNodo] = useState('');
+  const [nuevoTelefonoNodo, setNuevoTelefonoNodo] = useState(WHATSAPP_PHONE);
+  const [creandoNodo, setCreandoNodo] = useState(false);
+
+  const cargarSucursales = useCallback(async () => {
+    const { data, error: errSuc } = await supabase
+      .from('sucursales')
+      .select('id, nombre, telefono_alerta, api_key_whatsapp')
+      .order('id');
+    if (!errSuc && data && data.length) setSucursales(data);
+  }, []);
 
   // Cargar sucursales al iniciar
   useEffect(() => {
-    supabase
+    cargarSucursales();
+  }, [cargarSucursales]);
+
+  const crearNuevoNodo = async (e) => {
+    e.preventDefault();
+    const nombreLimpio = nuevoNombreNodo.trim();
+    if (!nombreLimpio) return;
+    setCreandoNodo(true);
+    setAviso('');
+
+    const { data: creado, error: errCrear } = await supabase
       .from('sucursales')
-      .select('id, nombre, telefono_alerta, api_key_whatsapp')
-      .order('id')
-      .then(({ data, error }) => {
-        if (!error && data && data.length) setSucursales(data);
-      });
-  }, []);
+      .insert({
+        nombre: nombreLimpio,
+        telefono_alerta: nuevoTelefonoNodo.trim() || WHATSAPP_PHONE,
+        api_key_whatsapp: CALLMEBOT_API_KEY,
+      })
+      .select()
+      .single();
+
+    if (errCrear || !creado) {
+      setCreandoNodo(false);
+      setAviso('⚠️ No se pudo registrar el nodo en Supabase. Verifica que hayas ejecutado supabase_schema.sql.');
+      return;
+    }
+
+    // Insertar lectura inicial para que la nueva nevera/nodo tenga datos de arranque
+    await supabase.from('lecturas_sensor').insert({
+      sucursal_id: creado.id,
+      temperatura: 4.5,
+      humedad: 58.0,
+      hay_luz: true,
+    });
+
+    await cargarSucursales();
+    setSucursalId(creado.id);
+    setNuevoNombreNodo('');
+    setMostrarNuevoNodo(false);
+    setCreandoNodo(false);
+    setAviso(
+      `✅ Nuevo espacio "${creado.nombre}" vinculado como Nodo ESP32-${String(creado.id).padStart(2, '0')} (SUCURSAL_ID = ${creado.id} en firmware).`
+    );
+  };
 
   const cargarDatos = useCallback(async () => {
     const [lec, ev] = await Promise.all([
@@ -91,7 +138,7 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
       setError(
         'Falta crear las tablas en Supabase: abre Supabase > SQL Editor, pega supabase_schema.sql y pulsa RUN. (Mostrando datos de vista previa).'
       );
-      setLecturas(( prev ) => (prev.length ? prev : LECTURAS_DEMO));
+      setLecturas((prev) => (prev.length ? prev : LECTURAS_DEMO));
     } else {
       setError('');
       setLecturas((lec.data || []).slice().reverse());
@@ -126,6 +173,7 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
   const hayLuz = ultima ? ultima.hay_luz !== false : true;
   const emergencia = Boolean(ultima) && (ultima.hay_luz === false || (temp !== null && temp > TEMP_MAX));
   const sucursalActual = sucursales.find((s) => s.id === sucursalId) || SUCURSALES_RESPALDO[0];
+  const codigoNodo = `ESP32-${String(sucursalActual.id).padStart(2, '0')}`;
 
   const datosGrafica = lecturas.map((l) => ({
     hora: hora(l.created_at),
@@ -189,40 +237,99 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
       {/* Barra superior */}
       <header className="border-b border-slate-800 bg-slate-900/80 backdrop-blur sticky top-0 z-10">
         <div className="max-w-6xl mx-auto px-4 py-3 flex flex-wrap items-center gap-3 justify-between">
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2.5">
             <span className="text-2xl">❄️</span>
-            <h1 className="text-xl font-bold text-cyan-400">Centinela IoT</h1>
+            <div>
+              <h1 className="text-xl font-bold text-cyan-400 leading-tight">Centinela IoT</h1>
+              <p className="text-[11px] text-slate-400">
+                Nodo activo: <span className="text-cyan-300 font-mono">{codigoNodo}</span> · {sucursalActual.nombre}
+              </p>
+            </div>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-2.5">
             <label htmlFor="selector-sucursal" className="text-sm text-slate-400">
-              Sucursal:
+              Nevera / ESP32:
             </label>
             <select
               id="selector-sucursal"
               value={sucursalId}
               onChange={(e) => setSucursalId(Number(e.target.value))}
-              className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 outline-none focus:border-cyan-500"
+              className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm outline-none focus:border-cyan-500"
             >
               {sucursales.map((s) => (
                 <option key={s.id} value={s.id}>
-                  {s.nombre}
+                  {`ESP32-${String(s.id).padStart(2, '0')} · ${s.nombre}`}
                 </option>
               ))}
             </select>
-            <span className="hidden sm:inline text-xs px-2 py-1 rounded bg-slate-800 text-slate-400">
-              {etiquetaUsuario}
+            <button
+              type="button"
+              onClick={() => setMostrarNuevoNodo((v) => !v)}
+              className="text-xs px-3 py-2 rounded-lg bg-cyan-500/15 hover:bg-cyan-500/25 text-cyan-300 border border-cyan-500/30 font-semibold transition"
+            >
+              + Vincular ESP32
+            </button>
+            <span className="hidden sm:inline text-xs px-2.5 py-1.5 rounded-lg bg-slate-800 text-slate-300 border border-slate-700">
+              👤 {etiquetaUsuario}
             </span>
             <button
               onClick={onSalir}
               className="text-sm px-3 py-2 rounded-lg border border-slate-700 hover:bg-slate-800"
             >
-              Salir
+              Cerrar sesión
             </button>
           </div>
         </div>
       </header>
 
       <main className="max-w-6xl mx-auto px-4 py-6 space-y-6">
+        {mostrarNuevoNodo && (
+          <form
+            onSubmit={crearNuevoNodo}
+            className="rounded-2xl border border-cyan-500/40 bg-slate-900 p-4 flex flex-wrap items-end gap-3"
+          >
+            <div className="flex-1 min-w-[200px]">
+              <label className="block text-xs text-slate-400 mb-1">
+                Nombre de la nevera, cava o espacio a monitorear
+              </label>
+              <input
+                type="text"
+                placeholder="Ej. Laboratorio Central - Nevera Vacunas"
+                value={nuevoNombreNodo}
+                onChange={(e) => setNuevoNombreNodo(e.target.value)}
+                className="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-sm outline-none focus:border-cyan-500"
+                required
+              />
+            </div>
+            <div className="w-full sm:w-52">
+              <label className="block text-xs text-slate-400 mb-1">WhatsApp de alerta</label>
+              <input
+                type="text"
+                placeholder="+584125002119"
+                value={nuevoTelefonoNodo}
+                onChange={(e) => setNuevoTelefonoNodo(e.target.value)}
+                className="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-sm outline-none focus:border-cyan-500 font-mono"
+              />
+            </div>
+            <div className="flex gap-2">
+              <button
+                type="submit"
+                disabled={creandoNodo}
+                className="px-4 py-2 rounded-lg bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-sm disabled:opacity-50"
+              >
+                {creandoNodo ? 'Vinculando...' : 'Guardar Nodo'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setMostrarNuevoNodo(false)}
+                className="px-3 py-2 rounded-lg border border-slate-700 hover:bg-slate-800 text-sm"
+              >
+                Cancelar
+              </button>
+            </div>
+          </form>
+        )}
+
         {error && (
           <div className="rounded-xl border border-amber-500/50 bg-amber-500/10 text-amber-300 p-4 text-sm">
             ⚠️ {error}

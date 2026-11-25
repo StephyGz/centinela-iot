@@ -23,7 +23,8 @@ centinela-iot/
 ### Paso 1: Base de Datos en Supabase (1 sola vez)
 1. Abre el proyecto en [Supabase](https://supabase.com/dashboard) → menú **SQL Editor** → **New query**.
 2. Copia y pega todo el contenido de [`supabase_schema.sql`](supabase_schema.sql) y pulsa **RUN**.
-3. Esto crea las tablas `sucursales` (*Bodegón Central* y *Farmacia Norte*), `lecturas_sensor` (con lecturas iniciales de prueba) y `eventos_alerta`, con **RLS desactivado** para que el ESP32 y la web lean y escriban sin bloqueos.
+3. Esto crea las tablas `sucursales` (*Bodegón Central* y *Farmacia Norte*), `lecturas_sensor` (con lecturas iniciales de prueba) y `eventos_alerta`, con **RLS activado** (solo usuarios autenticados pueden ver el panel y crear nuevas neveras/nodos ESP32, mientras que el ESP32 físico puede insertar telemetría).
+4. En Supabase ve a **Authentication → Providers → Email** y desactiva **"Confirm email"** (para que cualquier cuenta creada pueda iniciar sesión de inmediato en la presentación).
 
 ### Paso 2: Encender el Dashboard Web
 - **Opción rápida (Windows):** haz doble clic en **`INICIAR_PANEL.bat`**.
@@ -34,8 +35,8 @@ centinela-iot/
   npm run dev
   ```
   *(Si PowerShell bloquea `npm`, usa `npm.cmd install` y `npm.cmd run dev`).*
-- Abre **http://localhost:5173** y haz clic en **"🚀 Entrar Directo al Panel (Modo Evaluación)"**.
-- Dentro del panel tienes el botón **"📲 Enviar Alerta de Prueba a WhatsApp"** y botones de **prueba rápida** (*Simular Normal*, *Simular Corte de Luz*, *Simular Temp. Alta*) para verificar todo incluso antes de conectar el ESP32.
+- Abre **http://localhost:5173**, crea tu cuenta con correo y contraseña (o inicia sesión) para acceder al panel.
+- Dentro del panel puedes cambiar entre nodos (`ESP32-01`, `ESP32-02`), vincular nuevas neveras/ESP32 con el botón **"+ Vincular ESP32"**, enviar alertas con **"📲 Enviar Alerta de Prueba a WhatsApp"** y usar los botones de **prueba rápida** (*Simular Normal*, *Simular Corte de Luz*, *Simular Temp. Alta*).
 
 ### Paso 3: Cargar el Firmware al ESP32
 1. En **Arduino IDE**, instala desde el Gestor de Bibliotecas:
