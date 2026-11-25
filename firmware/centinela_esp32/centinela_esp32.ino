@@ -50,7 +50,7 @@ const char* CALLMEBOT_API_KEY = "7650246";
 
 const int   SUCURSAL_ID       = 1; // 1 = Bodegon Central, 2 = Farmacia Norte
 const char* NOMBRE_SUCURSAL   = "Bodegon Central";
-const char* PANEL_URL         = "https://TU-SITIO.netlify.app"; // Cambia por tu link de Netlify
+const char* PANEL_URL         = "https://centinela-iot.netlify.app";
 
 // =================== 3. INTERVALOS DE DEMOSTRACION ===================
 // Listos para demostrar en vivo:
