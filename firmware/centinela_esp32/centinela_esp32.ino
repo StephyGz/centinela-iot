@@ -50,6 +50,7 @@ const char* CALLMEBOT_API_KEY = "7650246";
 
 const int   SUCURSAL_ID       = 1; // 1 = Bodegon Central, 2 = Farmacia Norte
 const char* NOMBRE_SUCURSAL   = "Bodegon Central";
+const char* PANEL_URL         = "https://TU-SITIO.netlify.app"; // Cambia por tu link de Netlify
 
 // =================== 3. INTERVALOS DE DEMOSTRACION ===================
 // Listos para demostrar en vivo:
@@ -387,15 +388,21 @@ void loop() {
       // Si se fue la luz (hay_luz pasa de true a false), disparar WhatsApp
       if (!hay_luz) {
         Serial.println("[ALERTA] CORTE DE LUZ DETECTADO! Enviando WhatsApp...");
-        String msg = "ALERTA Centinela IoT: CORTE DE LUZ en " + String(NOMBRE_SUCURSAL) +
-                     ". Temperatura actual: " + String(temperatura, 1) + " C, Humedad: " +
-                     String(humedad, 0) + "%. Operando con bateria Mini UPS.";
+        String codigoNodo = "ESP32-" + String(SUCURSAL_ID < 10 ? "0" : "") + String(SUCURSAL_ID);
+        String msg = "*ALERTA CRITICA - CENTINELA IoT*\n"
+                     "Se ha detectado un *CORTE DE LUZ* en tu cadena de frio:\n"
+                     "- Nodo: " + codigoNodo + " (" + String(NOMBRE_SUCURSAL) + ")\n"
+                     "- Temperatura actual: " + String(temperatura, 1) + " C\n"
+                     "- Humedad: " + String(humedad, 0) + " %\n"
+                     "- Respaldo: Bateria Mini UPS activa\n\n"
+                     "Monitorea la temperatura en vivo aqui:\n" + String(PANEL_URL);
         enviarAlertaWhatsApp(msg);
-        guardarEventoAlerta("CORTE_LUZ", msg);
+        guardarEventoAlerta("CORTE_LUZ", "Corte de luz en " + codigoNodo + " (" + String(NOMBRE_SUCURSAL) + ") - Temp: " + String(temperatura, 1) + " C");
       } else {
         Serial.println("[INFO] Suministro electrico restablecido.");
-        String msg = "Centinela IoT: Luz restablecida en " + String(NOMBRE_SUCURSAL) +
-                     ". Temperatura actual: " + String(temperatura, 1) + " C.";
+        String codigoNodo = "ESP32-" + String(SUCURSAL_ID < 10 ? "0" : "") + String(SUCURSAL_ID);
+        String msg = "Luz restablecida en " + codigoNodo + " (" + String(NOMBRE_SUCURSAL) +
+                     "). Temperatura actual: " + String(temperatura, 1) + " C.";
         guardarEventoAlerta("LUZ_RESTABLECIDA", msg);
       }
       actualizarPantallaOLED();

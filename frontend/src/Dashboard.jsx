@@ -185,8 +185,18 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
     setAviso('');
     const telefono = (sucursalActual.telefono_alerta || WHATSAPP_PHONE).trim();
     const apikey = (sucursalActual.api_key_whatsapp || CALLMEBOT_API_KEY).trim();
-    const texto = 'Prueba Centinela IoT';
-    const url = `https://api.callmebot.com/whatsapp.php?phone=${telefono}&text=Prueba+Centinela+IoT&apikey=${apikey}`;
+    const panelUrl = window.location.origin;
+    const tempTexto = temp !== null ? `${temp.toFixed(1)} °C` : 'Sin lectura';
+    const estadoLuzTexto = hayLuz ? 'CON LUZ (Red Normal)' : 'SIN LUZ (Batería Mini UPS)';
+    const texto =
+      `*ALERTA CENTINELA IoT*\n` +
+      `Nodo: ${codigoNodo} (${sucursalActual.nombre})\n` +
+      `Estado eléctrico: ${estadoLuzTexto}\n` +
+      `Temperatura actual: ${tempTexto}\n\n` +
+      `Monitorea la temperatura en vivo aquí:\n${panelUrl}`;
+    const url = `https://api.callmebot.com/whatsapp.php?phone=${encodeURIComponent(
+      telefono
+    )}&text=${encodeURIComponent(texto)}&apikey=${encodeURIComponent(apikey)}`;
 
     try {
       await fetch(url, { method: 'GET', mode: 'no-cors' });
@@ -197,7 +207,7 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
     const nuevoEvento = {
       sucursal_id: sucursalId,
       tipo_evento: 'PRUEBA_WHATSAPP',
-      mensaje_enviado: `${texto} (${sucursalActual.nombre} -> ${telefono})`,
+      mensaje_enviado: `Alerta enviada a ${telefono} | ${codigoNodo} (${sucursalActual.nombre}) | ${tempTexto} | ${estadoLuzTexto}`,
     };
 
     const { error: errInsert } = await supabase.from('eventos_alerta').insert(nuevoEvento);
