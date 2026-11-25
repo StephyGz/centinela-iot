@@ -66,8 +66,9 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
   const [tempMin, setTempMin] = useState(TEMP_MIN);
   const [tempMax, setTempMax] = useState(TEMP_MAX);
 
-  // Cargar rango personalizado de la nevera/ESP32 seleccionada
+  // Cargar rango personalizado de la nevera/ESP32 seleccionada y limpiar avisos previos
   useEffect(() => {
+    setAviso('');
     try {
       const guardado = localStorage.getItem(`centinela_rango_${sucursalId}`);
       if (guardado) {
