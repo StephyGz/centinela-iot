@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   LineChart,
   Line,
@@ -33,45 +33,6 @@ const hora = (iso) =>
   new Date(iso).toLocaleTimeString('es-VE', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 const fechaHora = (iso) => new Date(iso).toLocaleString('es-VE');
 
-function evaluarAnomaliaLectura(lectura, minLim, maxLim) {
-  if (!lectura) return null;
-  const t = Number(lectura.temperatura);
-  const sinLuz = lectura.hay_luz === false;
-  const tempAlta = Number.isFinite(t) && t > maxLim;
-  const tempBaja = Number.isFinite(t) && t < minLim;
-
-  if (!sinLuz && !tempAlta && !tempBaja) return null;
-
-  if (sinLuz && tempAlta) {
-    return {
-      tipo: 'CORTE_LUZ',
-      titulo: `CORTE DE LUZ y TEMPERATURA ALTA (> ${maxLim.toFixed(1)} °C)`,
-    };
-  }
-  if (sinLuz && tempBaja) {
-    return {
-      tipo: 'CORTE_LUZ',
-      titulo: `CORTE DE LUZ y TEMPERATURA BAJA (< ${minLim.toFixed(1)} °C)`,
-    };
-  }
-  if (sinLuz) {
-    return {
-      tipo: 'CORTE_LUZ',
-      titulo: 'CORTE DE LUZ (Operando con Batería Mini UPS)',
-    };
-  }
-  if (tempAlta) {
-    return {
-      tipo: 'TEMP_ALTA',
-      titulo: `TEMPERATURA ALTA (supera el máximo de ${maxLim.toFixed(1)} °C)`,
-    };
-  }
-  return {
-    tipo: 'TEMP_BAJA',
-    titulo: `TEMPERATURA BAJA (por debajo del mínimo de ${minLim.toFixed(1)} °C)`,
-  };
-}
-
 function Tarjeta({ titulo, valor, detalle, ok, icono }) {
   const color = ok
     ? 'border-emerald-500/60 bg-emerald-500/10 text-emerald-400'
@@ -104,12 +65,6 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
   const [creandoNodo, setCreandoNodo] = useState(false);
   const [tempMin, setTempMin] = useState(TEMP_MIN);
   const [tempMax, setTempMax] = useState(TEMP_MAX);
-
-  // Referencias para enviar 1 sola vez por cambio de estado (normal -> alto/bajo/sin luz)
-  const ultimaLecturaVistaRef = useRef({});
-  const lecturasNotificadasRef = useRef(new Set());
-  const estadoAnomaliaPrevioRef = useRef({});
-  const timerAlertaRangoRef = useRef(null);
 
   const sucursalActual = sucursales.find((s) => s.id === sucursalId) || SUCURSALES_RESPALDO[0];
   const codigoNodo = `ESP32-${String(sucursalActual.id).padStart(2, '0')}`;
@@ -172,7 +127,6 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
   // Cargar rango personalizado de la nevera/ESP32 seleccionada y limpiar avisos previos
   useEffect(() => {
     setAviso('');
-    if (timerAlertaRangoRef.current) clearTimeout(timerAlertaRangoRef.current);
     try {
       const guardado = localStorage.getItem(`centinela_rango_${sucursalId}`);
       if (guardado) {
@@ -276,55 +230,9 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
       setError('');
       const ordenadas = (lec.data || []).slice().reverse();
       setLecturas(ordenadas);
-
-      // Enviar WhatsApp automático SOLO 1 VEZ cuando el estado cambia (ej. de NORMAL a TEMP_ALTA / TEMP_BAJA / CORTE_LUZ)
-      const masReciente = ordenadas.length ? ordenadas[ordenadas.length - 1] : null;
-      if (masReciente && masReciente.id) {
-        const idPrevio = ultimaLecturaVistaRef.current[sucursalId];
-        ultimaLecturaVistaRef.current[sucursalId] = masReciente.id;
-
-        const anomalia = evaluarAnomaliaLectura(masReciente, minEfectivo, maxEfectivo);
-        const estadoActual = anomalia ? anomalia.tipo : 'NORMAL';
-        const estadoPrevio = estadoAnomaliaPrevioRef.current[sucursalId];
-        estadoAnomaliaPrevioRef.current[sucursalId] = estadoActual;
-
-        if (
-          idPrevio !== undefined &&
-          idPrevio !== masReciente.id &&
-          !lecturasNotificadasRef.current.has(masReciente.id)
-        ) {
-          // Solo disparar si hubo un cambio real de estado hacia una anomalía
-          if (anomalia && estadoActual !== estadoPrevio) {
-            const suc = sucursales.find((s) => s.id === sucursalId) || SUCURSALES_RESPALDO[0];
-            lecturasNotificadasRef.current.add(masReciente.id);
-            const evReciente = listaEventos[0];
-            const haceMs = evReciente ? Date.now() - new Date(evReciente.created_at).getTime() : Infinity;
-            const yaAlertadoPorFirmware = haceMs < 15000 && evReciente?.tipo_evento === anomalia.tipo;
-
-            if (!yaAlertadoPorFirmware) {
-              const { telefono } = await enviarWhatsAppCallMeBot({
-                tipoEvento: anomalia.tipo,
-                motivoTexto: anomalia.titulo,
-                lecturaRef: masReciente,
-                sucursalObj: suc,
-                minLim: minEfectivo,
-                maxLim: maxEfectivo,
-              });
-              setAviso(`🚨 ¡Alerta automática enviada a WhatsApp (${telefono}) por ${anomalia.tipo} en ${suc.nombre}!`);
-              const { data: evAct } = await supabase
-                .from('eventos_alerta')
-                .select('*')
-                .eq('sucursal_id', sucursalId)
-                .order('created_at', { ascending: false })
-                .limit(15);
-              if (evAct) setEventos(evAct);
-            }
-          }
-        }
-      }
     }
     setUltimaAct(new Date());
-  }, [sucursalId, sucursales, minEfectivo, maxEfectivo, enviarWhatsAppCallMeBot]);
+  }, [sucursalId]);
 
   // Refresco cada 5 s + Realtime
   useEffect(() => {
@@ -361,34 +269,6 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
         localStorage.setItem(`centinela_rango_${sucursalId}`, JSON.stringify({ min: nuevoMin, max: nuevoMax }));
       } catch {
         // Ignorar errores de localStorage
-      }
-
-      // Si al cambiar el rango la lectura pasa de normal a fuera de límite, disparar alerta 1 sola vez
-      if (timerAlertaRangoRef.current) clearTimeout(timerAlertaRangoRef.current);
-      if (ultima && temp !== null) {
-        if (temp > nuevoMax || temp < nuevoMin) {
-          timerAlertaRangoRef.current = setTimeout(async () => {
-            const anomalia = evaluarAnomaliaLectura(ultima, nuevoMin, nuevoMax);
-            if (!anomalia) return;
-            if (estadoAnomaliaPrevioRef.current[sucursalId] === anomalia.tipo) return;
-            estadoAnomaliaPrevioRef.current[sucursalId] = anomalia.tipo;
-
-            const { telefono } = await enviarWhatsAppCallMeBot({
-              tipoEvento: anomalia.tipo,
-              motivoTexto: anomalia.titulo,
-              lecturaRef: ultima,
-              sucursalObj: sucursalActual,
-              minLim: nuevoMin,
-              maxLim: nuevoMax,
-            });
-            setAviso(
-              `🚨 ¡Alerta automática enviada a WhatsApp (${telefono})! La temperatura actual (${temp.toFixed(1)} °C) quedó fuera del rango configurado (${nuevoMin.toFixed(1)} °C – ${nuevoMax.toFixed(1)} °C).`
-            );
-            cargarDatos();
-          }, 700);
-        } else {
-          estadoAnomaliaPrevioRef.current[sucursalId] = hayLuz ? 'NORMAL' : 'CORTE_LUZ';
-        }
       }
     }
   };
@@ -439,47 +319,20 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
       hay_luz: modo !== 'apagon',
     };
 
-    const { data: insertada, error: errSim } = await supabase
+    const { error: errSim } = await supabase
       .from('lecturas_sensor')
-      .insert(nueva)
-      .select()
-      .single();
-
-    if (insertada?.id) {
-      lecturasNotificadasRef.current.add(insertada.id);
-      ultimaLecturaVistaRef.current[sucursalId] = insertada.id;
-    }
+      .insert(nueva);
 
     if (errSim) {
       setLecturas((prev) => [...prev.slice(-19), { id: Date.now(), created_at: new Date().toISOString(), ...nueva }]);
-    }
-
-    const anomalia = evaluarAnomaliaLectura(nueva, minEfectivo, maxEfectivo);
-    estadoAnomaliaPrevioRef.current[sucursalId] = anomalia ? anomalia.tipo : 'NORMAL';
-
-    // Si la lectura simulada tiene corte de luz o temperatura alta/baja, enviar WhatsApp AUTOMÁTICAMENTE
-    if (anomalia) {
-      const { telefono } = await enviarWhatsAppCallMeBot({
-        tipoEvento: anomalia.tipo,
-        motivoTexto: anomalia.titulo,
-        lecturaRef: nueva,
-        sucursalObj: sucursalActual,
-        minLim: minEfectivo,
-        maxLim: maxEfectivo,
-      });
-      setSimulando(false);
-      setAviso(
-        `🚨 ¡Alerta automática enviada a WhatsApp (${telefono})! [${sucursalActual.nombre}: ${anomalia.titulo}]`
-      );
-      if (!errSim) cargarDatos();
-      return;
     }
 
     setSimulando(false);
     if (errSim) {
       setAviso('🧪 Simulación aplicada en vista previa local (ejecuta supabase_schema.sql para guardarla en Supabase).');
     } else {
-      setAviso(`✅ Lectura normal (${nueva.temperatura} °C, Con Luz) registrada en ${sucursalActual.nombre}.`);
+      const estadoLuz = nueva.hay_luz ? 'Con Luz' : 'Sin Luz';
+      setAviso(`✅ Lectura simulada (${nueva.temperatura} °C, ${estadoLuz}) registrada en ${sucursalActual.nombre}.`);
       cargarDatos();
     }
   };
@@ -774,8 +627,8 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
             <div>
               <div className="flex items-center gap-2">
                 <h2 className="text-lg font-semibold">Alertas vía WhatsApp (CallMeBot)</h2>
-                <span className="px-2 py-0.5 text-xs font-semibold rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
-                  ● Notificación Automática Activa
+                <span className="px-2 py-0.5 text-xs font-semibold rounded-full bg-slate-800 text-slate-300 border border-slate-700">
+                  {sucursalId === 1 ? 'Hardware ESP32 conectado' : 'Prueba manual en panel'}
                 </span>
               </div>
               <p className="text-xs text-slate-400 mt-0.5">
@@ -783,27 +636,29 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
                 <span className="text-slate-200 font-mono">{sucursalActual.telefono_alerta || WHATSAPP_PHONE}</span>
               </p>
             </div>
-            <button
-              onClick={enviarPruebaWhatsApp}
-              disabled={enviando}
-              className="px-5 py-3 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold transition shadow-lg shadow-emerald-500/20 disabled:opacity-50"
-            >
-              {enviando ? 'Enviando...' : '📲 Enviar Alerta de Prueba a WhatsApp'}
-            </button>
+            {sucursalId !== 1 && (
+              <button
+                onClick={enviarPruebaWhatsApp}
+                disabled={enviando}
+                className="px-5 py-3 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold transition shadow-lg shadow-emerald-500/20 disabled:opacity-50"
+              >
+                {enviando ? 'Enviando...' : '📲 Enviar Alerta de Prueba a WhatsApp'}
+              </button>
+            )}
           </div>
 
           {/* Controles de prueba solo en nodos demo (Farmacia Norte / nuevos); Bodegón Central recibe datos reales del ESP32 */}
           {sucursalId === 1 ? (
             <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-800/80 text-xs text-slate-400">
               <span>
-                📡 <strong className="text-emerald-400">Telemetría física en vivo (ESP32-01):</strong> envía WhatsApp
-                automático al detectar corte de luz o temperatura fuera de rango ({minEfectivo}°C–{maxEfectivo}°C).
+                📡 <strong className="text-emerald-400">Telemetría física en vivo (ESP32-01):</strong> las alertas
+                automáticas a WhatsApp por corte y retorno de luz se envían directamente desde el hardware ESP32.
               </span>
               <span className="text-slate-500">Para simulaciones de prueba en panel, cambia a Farmacia Norte.</span>
             </div>
           ) : (
             <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-800/80 text-xs">
-              <span className="text-slate-400 mr-1">🧪 Prueba rápida en panel (dispara WhatsApp automático):</span>
+              <span className="text-slate-400 mr-1">🧪 Prueba rápida en panel:</span>
               <button
                 type="button"
                 disabled={simulando}
@@ -858,7 +713,9 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
                 {eventos.length === 0 && (
                   <tr>
                     <td colSpan={3} className="py-4 text-center text-slate-500">
-                      Aún no hay alertas registradas. Pulsa &ldquo;Enviar Alerta de Prueba a WhatsApp&rdquo; para probar.
+                      {sucursalId === 1
+                        ? 'Aún no hay alertas registradas para este nodo.'
+                        : 'Aún no hay alertas registradas. Pulsa “Enviar Alerta de Prueba a WhatsApp” para probar.'}
                     </td>
                   </tr>
                 )}
