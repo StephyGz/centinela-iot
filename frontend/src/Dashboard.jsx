@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   LineChart,
   Line,
@@ -33,6 +33,45 @@ const hora = (iso) =>
   new Date(iso).toLocaleTimeString('es-VE', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 const fechaHora = (iso) => new Date(iso).toLocaleString('es-VE');
 
+function evaluarAnomaliaLectura(lectura, minLim, maxLim) {
+  if (!lectura) return null;
+  const t = Number(lectura.temperatura);
+  const sinLuz = lectura.hay_luz === false;
+  const tempAlta = Number.isFinite(t) && t > maxLim;
+  const tempBaja = Number.isFinite(t) && t < minLim;
+
+  if (!sinLuz && !tempAlta && !tempBaja) return null;
+
+  if (sinLuz && tempAlta) {
+    return {
+      tipo: 'CORTE_LUZ',
+      titulo: `CORTE DE LUZ y TEMPERATURA ALTA (> ${maxLim.toFixed(1)} °C)`,
+    };
+  }
+  if (sinLuz && tempBaja) {
+    return {
+      tipo: 'CORTE_LUZ',
+      titulo: `CORTE DE LUZ y TEMPERATURA BAJA (< ${minLim.toFixed(1)} °C)`,
+    };
+  }
+  if (sinLuz) {
+    return {
+      tipo: 'CORTE_LUZ',
+      titulo: 'CORTE DE LUZ (Operando con Batería Mini UPS)',
+    };
+  }
+  if (tempAlta) {
+    return {
+      tipo: 'TEMP_ALTA',
+      titulo: `TEMPERATURA ALTA (supera el máximo de ${maxLim.toFixed(1)} °C)`,
+    };
+  }
+  return {
+    tipo: 'TEMP_BAJA',
+    titulo: `TEMPERATURA BAJA (por debajo del mínimo de ${minLim.toFixed(1)} °C)`,
+  };
+}
+
 function Tarjeta({ titulo, valor, detalle, ok, icono }) {
   const color = ok
     ? 'border-emerald-500/60 bg-emerald-500/10 text-emerald-400'
@@ -66,9 +105,74 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
   const [tempMin, setTempMin] = useState(TEMP_MIN);
   const [tempMax, setTempMax] = useState(TEMP_MAX);
 
+  // Referencias para evitar duplicar alertas de la misma lectura y controlar cambios de rango
+  const ultimaLecturaVistaRef = useRef({});
+  const lecturasNotificadasRef = useRef(new Set());
+  const timerAlertaRangoRef = useRef(null);
+  const ultimoEstadoRangoAlertadoRef = useRef({});
+
+  const sucursalActual = sucursales.find((s) => s.id === sucursalId) || SUCURSALES_RESPALDO[0];
+  const codigoNodo = `ESP32-${String(sucursalActual.id).padStart(2, '0')}`;
+
+  const enviarWhatsAppCallMeBot = useCallback(
+    async ({ tipoEvento, motivoTexto, lecturaRef, sucursalObj, minLim, maxLim }) => {
+      const suc = sucursalObj || sucursalActual;
+      const cod = `ESP32-${String(suc.id).padStart(2, '0')}`;
+      const telefono = (suc.telefono_alerta || WHATSAPP_PHONE).trim();
+      const apikey = (suc.api_key_whatsapp || CALLMEBOT_API_KEY).trim();
+      const panelUrl = window.location.origin;
+
+      const tVal = lecturaRef && lecturaRef.temperatura !== null ? Number(lecturaRef.temperatura) : null;
+      const hVal = lecturaRef && lecturaRef.humedad !== null ? Number(lecturaRef.humedad) : null;
+      const luzVal = lecturaRef ? lecturaRef.hay_luz !== false : true;
+
+      const tempTexto = tVal !== null && Number.isFinite(tVal) ? `${tVal.toFixed(1)} °C` : 'Sin lectura';
+      const humTexto = hVal !== null && Number.isFinite(hVal) ? `${hVal.toFixed(0)} %` : '--';
+      const estadoLuzTexto = luzVal ? 'CON LUZ (Red Normal)' : 'SIN LUZ (Batería Mini UPS)';
+      const rangoTexto =
+        Number.isFinite(minLim) && Number.isFinite(maxLim)
+          ? `${minLim.toFixed(1)} °C a ${maxLim.toFixed(1)} °C`
+          : '2.0 °C a 8.0 °C';
+
+      const texto =
+        `*ALERTA CENTINELA IoT*\n` +
+        `Evento: ${motivoTexto}\n` +
+        `Nodo: ${cod} (${suc.nombre})\n` +
+        `Estado eléctrico: ${estadoLuzTexto}\n` +
+        `Temperatura actual: ${tempTexto} (Rango: ${rangoTexto})\n` +
+        `Humedad: ${humTexto}\n\n` +
+        `Monitorea la temperatura en vivo aquí:\n${panelUrl}`;
+
+      const url = `https://api.callmebot.com/whatsapp.php?phone=${encodeURIComponent(
+        telefono
+      )}&text=${encodeURIComponent(texto)}&apikey=${encodeURIComponent(apikey)}`;
+
+      try {
+        await fetch(url, { method: 'GET', mode: 'no-cors' });
+      } catch {
+        new Image().src = url;
+      }
+
+      const resumenEvento = `Alerta enviada a ${telefono} | ${cod} (${suc.nombre}) | ${motivoTexto} | ${tempTexto} | ${estadoLuzTexto}`;
+      const nuevoEvento = {
+        sucursal_id: suc.id,
+        tipo_evento: tipoEvento,
+        mensaje_enviado: resumenEvento,
+      };
+
+      const { error: errInsert } = await supabase.from('eventos_alerta').insert(nuevoEvento);
+      if (errInsert) {
+        setEventos((prev) => [{ id: Date.now(), created_at: new Date().toISOString(), ...nuevoEvento }, ...prev]);
+      }
+      return { telefono, errInsert, resumenEvento };
+    },
+    [sucursalActual]
+  );
+
   // Cargar rango personalizado de la nevera/ESP32 seleccionada y limpiar avisos previos
   useEffect(() => {
     setAviso('');
+    if (timerAlertaRangoRef.current) clearTimeout(timerAlertaRangoRef.current);
     try {
       const guardado = localStorage.getItem(`centinela_rango_${sucursalId}`);
       if (guardado) {
@@ -85,18 +189,6 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
     setTempMin(TEMP_MIN);
     setTempMax(TEMP_MAX);
   }, [sucursalId]);
-
-  const actualizarRango = (nuevoMin, nuevoMax) => {
-    setTempMin(nuevoMin);
-    setTempMax(nuevoMax);
-    if (Number.isFinite(nuevoMin) && Number.isFinite(nuevoMax) && nuevoMin < nuevoMax) {
-      try {
-        localStorage.setItem(`centinela_rango_${sucursalId}`, JSON.stringify({ min: nuevoMin, max: nuevoMax }));
-      } catch {
-        // Ignorar errores de localStorage
-      }
-    }
-  };
 
   const cargarSucursales = useCallback(async () => {
     const { data, error: errSuc } = await supabase
@@ -152,6 +244,10 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
     );
   };
 
+  const rangoValido = Number.isFinite(tempMin) && Number.isFinite(tempMax) && tempMin < tempMax;
+  const minEfectivo = rangoValido ? tempMin : TEMP_MIN;
+  const maxEfectivo = rangoValido ? tempMax : TEMP_MAX;
+
   const cargarDatos = useCallback(async () => {
     const [lec, ev] = await Promise.all([
       supabase
@@ -168,6 +264,9 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
         .limit(15),
     ]);
 
+    const listaEventos = !ev.error && ev.data ? ev.data : [];
+    if (!ev.error) setEventos(listaEventos);
+
     if (lec.error) {
       setError(
         'Falta crear las tablas en Supabase: abre Supabase > SQL Editor, pega supabase_schema.sql y pulsa RUN. (Mostrando datos de vista previa).'
@@ -175,11 +274,52 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
       setLecturas((prev) => (prev.length ? prev : LECTURAS_DEMO));
     } else {
       setError('');
-      setLecturas((lec.data || []).slice().reverse());
+      const ordenadas = (lec.data || []).slice().reverse();
+      setLecturas(ordenadas);
+
+      // Si llegó una lectura NUEVA desde el ESP32 (o externo) con anomalía, disparar WhatsApp automático
+      const masReciente = ordenadas.length ? ordenadas[ordenadas.length - 1] : null;
+      if (masReciente && masReciente.id) {
+        const idPrevio = ultimaLecturaVistaRef.current[sucursalId];
+        ultimaLecturaVistaRef.current[sucursalId] = masReciente.id;
+
+        if (
+          idPrevio !== undefined &&
+          idPrevio !== masReciente.id &&
+          !lecturasNotificadasRef.current.has(masReciente.id)
+        ) {
+          const suc = sucursales.find((s) => s.id === sucursalId) || SUCURSALES_RESPALDO[0];
+          const anomalia = evaluarAnomaliaLectura(masReciente, minEfectivo, maxEfectivo);
+          if (anomalia) {
+            lecturasNotificadasRef.current.add(masReciente.id);
+            const evReciente = listaEventos[0];
+            const haceMs = evReciente ? Date.now() - new Date(evReciente.created_at).getTime() : Infinity;
+            const yaAlertadoPorFirmware = haceMs < 15000 && evReciente?.tipo_evento === anomalia.tipo;
+
+            if (!yaAlertadoPorFirmware) {
+              const { telefono } = await enviarWhatsAppCallMeBot({
+                tipoEvento: anomalia.tipo,
+                motivoTexto: anomalia.titulo,
+                lecturaRef: masReciente,
+                sucursalObj: suc,
+                minLim: minEfectivo,
+                maxLim: maxEfectivo,
+              });
+              setAviso(`🚨 ¡Alerta automática enviada a WhatsApp (${telefono}) por ${anomalia.tipo} en ${suc.nombre}!`);
+              const { data: evAct } = await supabase
+                .from('eventos_alerta')
+                .select('*')
+                .eq('sucursal_id', sucursalId)
+                .order('created_at', { ascending: false })
+                .limit(15);
+              if (evAct) setEventos(evAct);
+            }
+          }
+        }
+      }
     }
-    if (!ev.error) setEventos(ev.data || []);
     setUltimaAct(new Date());
-  }, [sucursalId]);
+  }, [sucursalId, sucursales, minEfectivo, maxEfectivo, enviarWhatsAppCallMeBot]);
 
   // Refresco cada 5 s + Realtime
   useEffect(() => {
@@ -203,15 +343,51 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
 
   const ultima = lecturas.length ? lecturas[lecturas.length - 1] : null;
   const temp = ultima && ultima.temperatura !== null ? Number(ultima.temperatura) : null;
-  const rangoValido = Number.isFinite(tempMin) && Number.isFinite(tempMax) && tempMin < tempMax;
-  const minEfectivo = rangoValido ? tempMin : TEMP_MIN;
-  const maxEfectivo = rangoValido ? tempMax : TEMP_MAX;
   const tempOk = temp !== null && temp >= minEfectivo && temp <= maxEfectivo;
   const hayLuz = ultima ? ultima.hay_luz !== false : true;
   const emergencia =
     Boolean(ultima) && (ultima.hay_luz === false || (temp !== null && (temp > maxEfectivo || temp < minEfectivo)));
-  const sucursalActual = sucursales.find((s) => s.id === sucursalId) || SUCURSALES_RESPALDO[0];
-  const codigoNodo = `ESP32-${String(sucursalActual.id).padStart(2, '0')}`;
+
+  const actualizarRango = (nuevoMin, nuevoMax) => {
+    setTempMin(nuevoMin);
+    setTempMax(nuevoMax);
+    if (Number.isFinite(nuevoMin) && Number.isFinite(nuevoMax) && nuevoMin < nuevoMax) {
+      try {
+        localStorage.setItem(`centinela_rango_${sucursalId}`, JSON.stringify({ min: nuevoMin, max: nuevoMax }));
+      } catch {
+        // Ignorar errores de localStorage
+      }
+
+      // Si al cambiar el rango la lectura actual queda fuera de límite, disparar alerta automática a WhatsApp
+      if (timerAlertaRangoRef.current) clearTimeout(timerAlertaRangoRef.current);
+      if (ultima && temp !== null) {
+        if (temp > nuevoMax || temp < nuevoMin) {
+          timerAlertaRangoRef.current = setTimeout(async () => {
+            const anomalia = evaluarAnomaliaLectura(ultima, nuevoMin, nuevoMax);
+            if (!anomalia) return;
+            const claveAlerta = `${sucursalId}:${anomalia.tipo}:${temp}:${nuevoMin}:${nuevoMax}`;
+            if (ultimoEstadoRangoAlertadoRef.current[sucursalId] === claveAlerta) return;
+            ultimoEstadoRangoAlertadoRef.current[sucursalId] = claveAlerta;
+
+            const { telefono } = await enviarWhatsAppCallMeBot({
+              tipoEvento: anomalia.tipo,
+              motivoTexto: anomalia.titulo,
+              lecturaRef: ultima,
+              sucursalObj: sucursalActual,
+              minLim: nuevoMin,
+              maxLim: nuevoMax,
+            });
+            setAviso(
+              `🚨 ¡Alerta automática enviada a WhatsApp (${telefono})! La temperatura actual (${temp.toFixed(1)} °C) quedó fuera del rango configurado (${nuevoMin.toFixed(1)} °C – ${nuevoMax.toFixed(1)} °C).`
+            );
+            cargarDatos();
+          }, 700);
+        } else {
+          ultimoEstadoRangoAlertadoRef.current[sucursalId] = null;
+        }
+      }
+    }
+  };
 
   const datosGrafica = lecturas.map((l) => ({
     hora: hora(l.created_at),
@@ -224,38 +400,17 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
   const enviarPruebaWhatsApp = async () => {
     setEnviando(true);
     setAviso('');
-    const telefono = (sucursalActual.telefono_alerta || WHATSAPP_PHONE).trim();
-    const apikey = (sucursalActual.api_key_whatsapp || CALLMEBOT_API_KEY).trim();
-    const panelUrl = window.location.origin;
-    const tempTexto = temp !== null ? `${temp.toFixed(1)} °C` : 'Sin lectura';
-    const estadoLuzTexto = hayLuz ? 'CON LUZ (Red Normal)' : 'SIN LUZ (Batería Mini UPS)';
-    const texto =
-      `*ALERTA CENTINELA IoT*\n` +
-      `Nodo: ${codigoNodo} (${sucursalActual.nombre})\n` +
-      `Estado eléctrico: ${estadoLuzTexto}\n` +
-      `Temperatura actual: ${tempTexto}\n\n` +
-      `Monitorea la temperatura en vivo aquí:\n${panelUrl}`;
-    const url = `https://api.callmebot.com/whatsapp.php?phone=${encodeURIComponent(
-      telefono
-    )}&text=${encodeURIComponent(texto)}&apikey=${encodeURIComponent(apikey)}`;
-
-    try {
-      await fetch(url, { method: 'GET', mode: 'no-cors' });
-    } catch {
-      new Image().src = url;
-    }
-
-    const nuevoEvento = {
-      sucursal_id: sucursalId,
-      tipo_evento: 'PRUEBA_WHATSAPP',
-      mensaje_enviado: `Alerta enviada a ${telefono} | ${codigoNodo} (${sucursalActual.nombre}) | ${tempTexto} | ${estadoLuzTexto}`,
-    };
-
-    const { error: errInsert } = await supabase.from('eventos_alerta').insert(nuevoEvento);
+    const { telefono, errInsert } = await enviarWhatsAppCallMeBot({
+      tipoEvento: 'PRUEBA_WHATSAPP',
+      motivoTexto: 'PRUEBA DE CONEXIÓN WHATSAPP',
+      lecturaRef: ultima,
+      sucursalObj: sucursalActual,
+      minLim: minEfectivo,
+      maxLim: maxEfectivo,
+    });
     setEnviando(false);
 
     if (errInsert) {
-      setEventos((prev) => [{ id: Date.now(), created_at: new Date().toISOString(), ...nuevoEvento }, ...prev]);
       setAviso(`✅ Solicitud de WhatsApp enviada a ${telefono}. (Ejecuta supabase_schema.sql para guardar en BD).`);
     } else {
       setAviso(`✅ Alerta de prueba enviada a WhatsApp (${telefono}) y registrada en la base de datos.`);
@@ -279,13 +434,46 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
       humedad: Number((55 + Math.random() * 5).toFixed(1)),
       hay_luz: modo !== 'apagon',
     };
-    const { error: errSim } = await supabase.from('lecturas_sensor').insert(nueva);
-    setSimulando(false);
+
+    const { data: insertada, error: errSim } = await supabase
+      .from('lecturas_sensor')
+      .insert(nueva)
+      .select()
+      .single();
+
+    if (insertada?.id) {
+      lecturasNotificadasRef.current.add(insertada.id);
+      ultimaLecturaVistaRef.current[sucursalId] = insertada.id;
+    }
+
     if (errSim) {
       setLecturas((prev) => [...prev.slice(-19), { id: Date.now(), created_at: new Date().toISOString(), ...nueva }]);
+    }
+
+    // Si la lectura simulada tiene corte de luz o temperatura alta/baja, enviar WhatsApp AUTOMÁTICAMENTE
+    const anomalia = evaluarAnomaliaLectura(nueva, minEfectivo, maxEfectivo);
+    if (anomalia) {
+      const { telefono } = await enviarWhatsAppCallMeBot({
+        tipoEvento: anomalia.tipo,
+        motivoTexto: anomalia.titulo,
+        lecturaRef: nueva,
+        sucursalObj: sucursalActual,
+        minLim: minEfectivo,
+        maxLim: maxEfectivo,
+      });
+      setSimulando(false);
+      setAviso(
+        `🚨 ¡Alerta automática enviada a WhatsApp (${telefono})! [${sucursalActual.nombre}: ${anomalia.titulo}]`
+      );
+      if (!errSim) cargarDatos();
+      return;
+    }
+
+    setSimulando(false);
+    if (errSim) {
       setAviso('🧪 Simulación aplicada en vista previa local (ejecuta supabase_schema.sql para guardarla en Supabase).');
     } else {
-      setAviso('🧪 Lectura simulada insertada en Supabase correctamente.');
+      setAviso(`✅ Lectura normal (${nueva.temperatura} °C, Con Luz) registrada en ${sucursalActual.nombre}.`);
       cargarDatos();
     }
   };
@@ -578,8 +766,13 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
         <section className="rounded-2xl border border-slate-800 bg-slate-900 p-5 space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <h2 className="text-lg font-semibold">Alertas vía WhatsApp (CallMeBot)</h2>
-              <p className="text-xs text-slate-400">
+              <div className="flex items-center gap-2">
+                <h2 className="text-lg font-semibold">Alertas vía WhatsApp (CallMeBot)</h2>
+                <span className="px-2 py-0.5 text-xs font-semibold rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+                  ● Notificación Automática Activa
+                </span>
+              </div>
+              <p className="text-xs text-slate-400 mt-0.5">
                 Teléfono configurado:{' '}
                 <span className="text-slate-200 font-mono">{sucursalActual.telefono_alerta || WHATSAPP_PHONE}</span>
               </p>
@@ -597,14 +790,14 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
           {sucursalId === 1 ? (
             <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-800/80 text-xs text-slate-400">
               <span>
-                📡 <strong className="text-emerald-400">Telemetría física en vivo (ESP32-01):</strong> este nodo recibe
-                lecturas reales directamente del hardware.
+                📡 <strong className="text-emerald-400">Telemetría física en vivo (ESP32-01):</strong> envía WhatsApp
+                automático al detectar corte de luz o temperatura fuera de rango ({minEfectivo}°C–{maxEfectivo}°C).
               </span>
-              <span className="text-slate-500">Para simulaciones de prueba, cambia a Farmacia Norte.</span>
+              <span className="text-slate-500">Para simulaciones de prueba en panel, cambia a Farmacia Norte.</span>
             </div>
           ) : (
             <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-800/80 text-xs">
-              <span className="text-slate-400 mr-1">🧪 Prueba rápida en panel:</span>
+              <span className="text-slate-400 mr-1">🧪 Prueba rápida en panel (dispara WhatsApp automático):</span>
               <button
                 type="button"
                 disabled={simulando}

@@ -62,6 +62,11 @@ const char* PANEL_URL         = "https://centinela-iot.netlify.app";
 const unsigned long INTERVALO_CON_LUZ = 15000UL; // 15 segundos
 const unsigned long INTERVALO_SIN_LUZ = 5000UL;  // 5 segundos
 
+// Rango seguro de cadena de frio (2.0 C a 8.0 C) y tiempo de re-alerta (60 s)
+const float         TEMP_MIN_SEGURA         = 2.0;
+const float         TEMP_MAX_SEGURA         = 8.0;
+const unsigned long INTERVALO_REALERTA_TEMP = 60000UL;
+
 // Polaridad del rele en GPIO 18 (INPUT_PULLUP):
 // true  = GPIO 18 en LOW significa que HAY LUZ (contacto cerrado a GND con luz)
 // false = GPIO 18 en HIGH significa que HAY LUZ (contacto abierto con luz)
@@ -84,17 +89,19 @@ DHT dht(PIN_DHT, DHTTYPE);
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 
 // ======================= VARIABLES DE ESTADO =========================
-float temperatura    = 5.0;  // Valor inicial seguro de respaldo
-float humedad        = 56.0; // Valor inicial seguro de respaldo
-bool  sensorDhtOk    = false;
-bool  hay_luz        = true;
-bool  hay_luz_previa = true;
-bool  oledDisponible = false;
-String estadoEnvio   = "Iniciando...";
+float temperatura      = 5.0;  // Valor inicial seguro de respaldo
+float humedad          = 56.0; // Valor inicial seguro de respaldo
+bool  sensorDhtOk      = false;
+bool  hay_luz          = true;
+bool  hay_luz_previa   = true;
+bool  oledDisponible   = false;
+int   estadoTempPrevio = 0;    // 0 = Normal (2 a 8 C), 1 = Alta (>8 C), -1 = Baja (<2 C)
+String estadoEnvio     = "Iniciando...";
 
-unsigned long ultimoEnvio       = 0;
-unsigned long ultimaLecturaDht  = 0;
-unsigned long ultimoReintentoWf = 0;
+unsigned long ultimoEnvio        = 0;
+unsigned long ultimaLecturaDht   = 0;
+unsigned long ultimoReintentoWf  = 0;
+unsigned long ultimaAlertaTempMs = 0;
 
 // ======================= FUNCIONES AUXILIARES ========================
 String codificarTextoUrl(const String& texto) {
@@ -313,6 +320,61 @@ bool enviarAlertaWhatsApp(const String& mensaje) {
   return (httpCode >= 200 && httpCode < 400);
 }
 
+void verificarAlertasTemperatura() {
+  if (!sensorDhtOk) return;
+
+  // 0 = Normal (2.0 C a 8.0 C), 1 = Alta (> 8.0 C), -1 = Baja (< 2.0 C)
+  int estadoTempActual = 0;
+  if (temperatura > TEMP_MAX_SEGURA) {
+    estadoTempActual = 1;
+  } else if (temperatura < TEMP_MIN_SEGURA) {
+    estadoTempActual = -1;
+  }
+
+  String codigoNodo = "ESP32-" + String(SUCURSAL_ID < 10 ? "0" : "") + String(SUCURSAL_ID);
+
+  if (estadoTempActual != 0) {
+    bool cambioDeEstado = (estadoTempActual != estadoTempPrevio);
+    bool tocaReAlerta   = (millis() - ultimaAlertaTempMs >= INTERVALO_REALERTA_TEMP);
+
+    if (cambioDeEstado || tocaReAlerta) {
+      estadoTempPrevio   = estadoTempActual;
+      ultimaAlertaTempMs = millis();
+
+      String tipo = (estadoTempActual == 1) ? "TEMP_ALTA" : "TEMP_BAJA";
+      String etiqueta = (estadoTempActual == 1)
+                          ? ("*TEMPERATURA ALTA* (> " + String(TEMP_MAX_SEGURA, 1) + " C)")
+                          : ("*TEMPERATURA BAJA* (< " + String(TEMP_MIN_SEGURA, 1) + " C)");
+      String msg = "*ALERTA CRITICA - CENTINELA IoT*\n"
+                   "Se ha detectado " + etiqueta + " en tu cadena de frio:\n"
+                   "- Nodo: " + codigoNodo + " (" + String(NOMBRE_SUCURSAL) + ")\n"
+                   "- Temperatura actual: " + String(temperatura, 1) + " C\n"
+                   "- Humedad: " + String(humedad, 0) + " %\n"
+                   "- Estado electrico: " + String(hay_luz ? "CON LUZ (Red Normal)" : "SIN LUZ (Bateria Mini UPS)") + "\n\n"
+                   "Monitorea la temperatura en vivo aqui:\n" + String(PANEL_URL);
+
+      String resumen = ((estadoTempActual == 1) ? "Temperatura alta en " : "Temperatura baja en ") +
+                       codigoNodo + " (" + String(NOMBRE_SUCURSAL) + ") - Temp: " + String(temperatura, 1) + " C";
+
+      Serial.println("[ALERTA TEMP] " + resumen);
+      guardarEventoAlerta(tipo, resumen);
+      enviarDatosSupabase();
+      ultimoEnvio = millis();
+      enviarAlertaWhatsApp(msg);
+      actualizarPantallaOLED();
+    }
+  } else if (estadoTempPrevio != 0) {
+    estadoTempPrevio = 0;
+    String resumen = "Temperatura normalizada en " + codigoNodo + " (" + String(NOMBRE_SUCURSAL) +
+                     ") - Temp: " + String(temperatura, 1) + " C";
+    Serial.println("[INFO TEMP] " + resumen);
+    guardarEventoAlerta("TEMP_NORMALIZADA", resumen);
+    enviarDatosSupabase();
+    ultimoEnvio = millis();
+    actualizarPantallaOLED();
+  }
+}
+
 // ========================= 6. SETUP Y LOOP ===========================
 void setup() {
   Serial.begin(115200);
@@ -341,13 +403,14 @@ void setup() {
   }
 
   hay_luz        = leerEstadoLuz();
-  hay_luz_previa = hay_luz;
+  hay_luz_previa = true; // Si arranca sin luz, dispara alerta inmediata en loop()
   actualizarLeds();
   actualizarPantallaOLED();
 
   conectarWiFi();
   enviarDatosSupabase();
   ultimoEnvio = millis();
+  verificarAlertasTemperatura();
   actualizarPantallaOLED();
 }
 
@@ -356,11 +419,12 @@ void loop() {
   hay_luz = leerEstadoLuz();
   actualizarLeds();
 
-  // 2) Lectura del sensor DHT11 cada 2 segundos
+  // 2) Lectura del sensor DHT11 cada 2 segundos + verificacion automatica de alertas de temperatura
   if (millis() - ultimaLecturaDht >= 2000) {
     ultimaLecturaDht = millis();
     leerSensorDHT();
     actualizarPantallaOLED();
+    verificarAlertasTemperatura();
   }
 
   // 3) Reintento automatico de WiFi cada 15 segundos si se desconecta
@@ -381,11 +445,7 @@ void loop() {
       leerSensorDHT();
       actualizarPantallaOLED();
 
-      // Enviar inmediatamente el nuevo estado a Supabase
-      enviarDatosSupabase();
-      ultimoEnvio = millis();
-
-      // Si se fue la luz (hay_luz pasa de true a false), disparar WhatsApp
+      // Si se fue la luz (hay_luz pasa de true a false), disparar WhatsApp automatico
       if (!hay_luz) {
         Serial.println("[ALERTA] CORTE DE LUZ DETECTADO! Enviando WhatsApp...");
         String codigoNodo = "ESP32-" + String(SUCURSAL_ID < 10 ? "0" : "") + String(SUCURSAL_ID);
@@ -396,14 +456,18 @@ void loop() {
                      "- Humedad: " + String(humedad, 0) + " %\n"
                      "- Respaldo: Bateria Mini UPS activa\n\n"
                      "Monitorea la temperatura en vivo aqui:\n" + String(PANEL_URL);
-        enviarAlertaWhatsApp(msg);
         guardarEventoAlerta("CORTE_LUZ", "Corte de luz en " + codigoNodo + " (" + String(NOMBRE_SUCURSAL) + ") - Temp: " + String(temperatura, 1) + " C");
+        enviarDatosSupabase();
+        ultimoEnvio = millis();
+        enviarAlertaWhatsApp(msg);
       } else {
         Serial.println("[INFO] Suministro electrico restablecido.");
         String codigoNodo = "ESP32-" + String(SUCURSAL_ID < 10 ? "0" : "") + String(SUCURSAL_ID);
         String msg = "Luz restablecida en " + codigoNodo + " (" + String(NOMBRE_SUCURSAL) +
                      "). Temperatura actual: " + String(temperatura, 1) + " C.";
         guardarEventoAlerta("LUZ_RESTABLECIDA", msg);
+        enviarDatosSupabase();
+        ultimoEnvio = millis();
       }
       actualizarPantallaOLED();
     }
