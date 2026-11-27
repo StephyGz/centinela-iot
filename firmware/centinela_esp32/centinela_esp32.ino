@@ -62,10 +62,9 @@ const char* PANEL_URL         = "https://centinela-iot.netlify.app";
 const unsigned long INTERVALO_CON_LUZ = 15000UL; // 15 segundos
 const unsigned long INTERVALO_SIN_LUZ = 5000UL;  // 5 segundos
 
-// Rango seguro de cadena de frio (2.0 C a 8.0 C) y tiempo de re-alerta (60 s)
-const float         TEMP_MIN_SEGURA         = 2.0;
-const float         TEMP_MAX_SEGURA         = 8.0;
-const unsigned long INTERVALO_REALERTA_TEMP = 60000UL;
+// Rango seguro de cadena de frio (2.0 C a 8.0 C)
+const float TEMP_MIN_SEGURA = 2.0;
+const float TEMP_MAX_SEGURA = 8.0;
 
 // Polaridad del rele en GPIO 18 (INPUT_PULLUP):
 // true  = GPIO 18 en LOW significa que HAY LUZ (contacto cerrado a GND con luz)
@@ -98,10 +97,9 @@ bool  oledDisponible   = false;
 int   estadoTempPrevio = 0;    // 0 = Normal (2 a 8 C), 1 = Alta (>8 C), -1 = Baja (<2 C)
 String estadoEnvio     = "Iniciando...";
 
-unsigned long ultimoEnvio        = 0;
-unsigned long ultimaLecturaDht   = 0;
-unsigned long ultimoReintentoWf  = 0;
-unsigned long ultimaAlertaTempMs = 0;
+unsigned long ultimoEnvio       = 0;
+unsigned long ultimaLecturaDht  = 0;
+unsigned long ultimoReintentoWf = 0;
 
 // ======================= FUNCIONES AUXILIARES ========================
 String codificarTextoUrl(const String& texto) {
@@ -331,40 +329,35 @@ void verificarAlertasTemperatura() {
     estadoTempActual = -1;
   }
 
+  // Solo actua una unica vez cuando cambia el estado (de normal a alta/baja, o viceversa)
+  if (estadoTempActual == estadoTempPrevio) return;
+
+  estadoTempPrevio = estadoTempActual;
   String codigoNodo = "ESP32-" + String(SUCURSAL_ID < 10 ? "0" : "") + String(SUCURSAL_ID);
 
   if (estadoTempActual != 0) {
-    bool cambioDeEstado = (estadoTempActual != estadoTempPrevio);
-    bool tocaReAlerta   = (millis() - ultimaAlertaTempMs >= INTERVALO_REALERTA_TEMP);
+    String tipo = (estadoTempActual == 1) ? "TEMP_ALTA" : "TEMP_BAJA";
+    String etiqueta = (estadoTempActual == 1)
+                        ? ("*TEMPERATURA ALTA* (> " + String(TEMP_MAX_SEGURA, 1) + " C)")
+                        : ("*TEMPERATURA BAJA* (< " + String(TEMP_MIN_SEGURA, 1) + " C)");
+    String msg = "*ALERTA CRITICA - CENTINELA IoT*\n"
+                 "Se ha detectado " + etiqueta + " en tu cadena de frio:\n"
+                 "- Nodo: " + codigoNodo + " (" + String(NOMBRE_SUCURSAL) + ")\n"
+                 "- Temperatura actual: " + String(temperatura, 1) + " C\n"
+                 "- Humedad: " + String(humedad, 0) + " %\n"
+                 "- Estado electrico: " + String(hay_luz ? "CON LUZ (Red Normal)" : "SIN LUZ (Bateria Mini UPS)") + "\n\n"
+                 "Monitorea la temperatura en vivo aqui:\n" + String(PANEL_URL);
 
-    if (cambioDeEstado || tocaReAlerta) {
-      estadoTempPrevio   = estadoTempActual;
-      ultimaAlertaTempMs = millis();
+    String resumen = ((estadoTempActual == 1) ? "Temperatura alta en " : "Temperatura baja en ") +
+                     codigoNodo + " (" + String(NOMBRE_SUCURSAL) + ") - Temp: " + String(temperatura, 1) + " C";
 
-      String tipo = (estadoTempActual == 1) ? "TEMP_ALTA" : "TEMP_BAJA";
-      String etiqueta = (estadoTempActual == 1)
-                          ? ("*TEMPERATURA ALTA* (> " + String(TEMP_MAX_SEGURA, 1) + " C)")
-                          : ("*TEMPERATURA BAJA* (< " + String(TEMP_MIN_SEGURA, 1) + " C)");
-      String msg = "*ALERTA CRITICA - CENTINELA IoT*\n"
-                   "Se ha detectado " + etiqueta + " en tu cadena de frio:\n"
-                   "- Nodo: " + codigoNodo + " (" + String(NOMBRE_SUCURSAL) + ")\n"
-                   "- Temperatura actual: " + String(temperatura, 1) + " C\n"
-                   "- Humedad: " + String(humedad, 0) + " %\n"
-                   "- Estado electrico: " + String(hay_luz ? "CON LUZ (Red Normal)" : "SIN LUZ (Bateria Mini UPS)") + "\n\n"
-                   "Monitorea la temperatura en vivo aqui:\n" + String(PANEL_URL);
-
-      String resumen = ((estadoTempActual == 1) ? "Temperatura alta en " : "Temperatura baja en ") +
-                       codigoNodo + " (" + String(NOMBRE_SUCURSAL) + ") - Temp: " + String(temperatura, 1) + " C";
-
-      Serial.println("[ALERTA TEMP] " + resumen);
-      guardarEventoAlerta(tipo, resumen);
-      enviarDatosSupabase();
-      ultimoEnvio = millis();
-      enviarAlertaWhatsApp(msg);
-      actualizarPantallaOLED();
-    }
-  } else if (estadoTempPrevio != 0) {
-    estadoTempPrevio = 0;
+    Serial.println("[ALERTA TEMP] " + resumen);
+    guardarEventoAlerta(tipo, resumen);
+    enviarDatosSupabase();
+    ultimoEnvio = millis();
+    enviarAlertaWhatsApp(msg);
+    actualizarPantallaOLED();
+  } else {
     String resumen = "Temperatura normalizada en " + codigoNodo + " (" + String(NOMBRE_SUCURSAL) +
                      ") - Temp: " + String(temperatura, 1) + " C";
     Serial.println("[INFO TEMP] " + resumen);

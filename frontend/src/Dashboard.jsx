@@ -105,11 +105,11 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
   const [tempMin, setTempMin] = useState(TEMP_MIN);
   const [tempMax, setTempMax] = useState(TEMP_MAX);
 
-  // Referencias para evitar duplicar alertas de la misma lectura y controlar cambios de rango
+  // Referencias para enviar 1 sola vez por cambio de estado (normal -> alto/bajo/sin luz)
   const ultimaLecturaVistaRef = useRef({});
   const lecturasNotificadasRef = useRef(new Set());
+  const estadoAnomaliaPrevioRef = useRef({});
   const timerAlertaRangoRef = useRef(null);
-  const ultimoEstadoRangoAlertadoRef = useRef({});
 
   const sucursalActual = sucursales.find((s) => s.id === sucursalId) || SUCURSALES_RESPALDO[0];
   const codigoNodo = `ESP32-${String(sucursalActual.id).padStart(2, '0')}`;
@@ -277,20 +277,25 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
       const ordenadas = (lec.data || []).slice().reverse();
       setLecturas(ordenadas);
 
-      // Si llegó una lectura NUEVA desde el ESP32 (o externo) con anomalía, disparar WhatsApp automático
+      // Enviar WhatsApp automático SOLO 1 VEZ cuando el estado cambia (ej. de NORMAL a TEMP_ALTA / TEMP_BAJA / CORTE_LUZ)
       const masReciente = ordenadas.length ? ordenadas[ordenadas.length - 1] : null;
       if (masReciente && masReciente.id) {
         const idPrevio = ultimaLecturaVistaRef.current[sucursalId];
         ultimaLecturaVistaRef.current[sucursalId] = masReciente.id;
+
+        const anomalia = evaluarAnomaliaLectura(masReciente, minEfectivo, maxEfectivo);
+        const estadoActual = anomalia ? anomalia.tipo : 'NORMAL';
+        const estadoPrevio = estadoAnomaliaPrevioRef.current[sucursalId];
+        estadoAnomaliaPrevioRef.current[sucursalId] = estadoActual;
 
         if (
           idPrevio !== undefined &&
           idPrevio !== masReciente.id &&
           !lecturasNotificadasRef.current.has(masReciente.id)
         ) {
-          const suc = sucursales.find((s) => s.id === sucursalId) || SUCURSALES_RESPALDO[0];
-          const anomalia = evaluarAnomaliaLectura(masReciente, minEfectivo, maxEfectivo);
-          if (anomalia) {
+          // Solo disparar si hubo un cambio real de estado hacia una anomalía
+          if (anomalia && estadoActual !== estadoPrevio) {
+            const suc = sucursales.find((s) => s.id === sucursalId) || SUCURSALES_RESPALDO[0];
             lecturasNotificadasRef.current.add(masReciente.id);
             const evReciente = listaEventos[0];
             const haceMs = evReciente ? Date.now() - new Date(evReciente.created_at).getTime() : Infinity;
@@ -358,16 +363,15 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
         // Ignorar errores de localStorage
       }
 
-      // Si al cambiar el rango la lectura actual queda fuera de límite, disparar alerta automática a WhatsApp
+      // Si al cambiar el rango la lectura pasa de normal a fuera de límite, disparar alerta 1 sola vez
       if (timerAlertaRangoRef.current) clearTimeout(timerAlertaRangoRef.current);
       if (ultima && temp !== null) {
         if (temp > nuevoMax || temp < nuevoMin) {
           timerAlertaRangoRef.current = setTimeout(async () => {
             const anomalia = evaluarAnomaliaLectura(ultima, nuevoMin, nuevoMax);
             if (!anomalia) return;
-            const claveAlerta = `${sucursalId}:${anomalia.tipo}:${temp}:${nuevoMin}:${nuevoMax}`;
-            if (ultimoEstadoRangoAlertadoRef.current[sucursalId] === claveAlerta) return;
-            ultimoEstadoRangoAlertadoRef.current[sucursalId] = claveAlerta;
+            if (estadoAnomaliaPrevioRef.current[sucursalId] === anomalia.tipo) return;
+            estadoAnomaliaPrevioRef.current[sucursalId] = anomalia.tipo;
 
             const { telefono } = await enviarWhatsAppCallMeBot({
               tipoEvento: anomalia.tipo,
@@ -383,7 +387,7 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
             cargarDatos();
           }, 700);
         } else {
-          ultimoEstadoRangoAlertadoRef.current[sucursalId] = null;
+          estadoAnomaliaPrevioRef.current[sucursalId] = hayLuz ? 'NORMAL' : 'CORTE_LUZ';
         }
       }
     }
@@ -450,8 +454,10 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
       setLecturas((prev) => [...prev.slice(-19), { id: Date.now(), created_at: new Date().toISOString(), ...nueva }]);
     }
 
-    // Si la lectura simulada tiene corte de luz o temperatura alta/baja, enviar WhatsApp AUTOMÁTICAMENTE
     const anomalia = evaluarAnomaliaLectura(nueva, minEfectivo, maxEfectivo);
+    estadoAnomaliaPrevioRef.current[sucursalId] = anomalia ? anomalia.tipo : 'NORMAL';
+
+    // Si la lectura simulada tiene corte de luz o temperatura alta/baja, enviar WhatsApp AUTOMÁTICAMENTE
     if (anomalia) {
       const { telefono } = await enviarWhatsAppCallMeBot({
         tipoEvento: anomalia.tipo,
