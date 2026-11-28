@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   LineChart,
   Line,
@@ -69,7 +69,8 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
   const [creandoNodo, setCreandoNodo] = useState(false);
   const [tempMin, setTempMin] = useState(TEMP_MIN);
   const [tempMax, setTempMax] = useState(TEMP_MAX);
-  const timerGuardarRangoRef = useRef(null);
+  const [editandoRango, setEditandoRango] = useState(false);
+  const [guardandoRango, setGuardandoRango] = useState(false);
 
   const sucursalActual = sucursales.find((s) => s.id === sucursalId) || SUCURSALES_RESPALDO[0];
   const codigoNodo = `ESP32-${String(sucursalActual.id).padStart(2, '0')}`;
@@ -154,9 +155,14 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
     [sucursalActual]
   );
 
+  useEffect(() => {
+    setEditandoRango(false);
+    setAviso('');
+  }, [sucursalId]);
+
   // Cargar rango personalizado desde Supabase (con respaldo localStorage) al cambiar de sucursal o actualizarse en BD
   useEffect(() => {
-    setAviso('');
+    if (editandoRango) return;
     const suc = sucursales.find((s) => s.id === sucursalId);
     const minDb = suc && suc.temp_min !== null && suc.temp_min !== undefined ? Number(suc.temp_min) : NaN;
     const maxDb = suc && suc.temp_max !== null && suc.temp_max !== undefined ? Number(suc.temp_max) : NaN;
@@ -182,7 +188,7 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
     }
     setTempMin(TEMP_MIN);
     setTempMax(TEMP_MAX);
-  }, [sucursalId, sucursales]);
+  }, [sucursalId, sucursales, editandoRango]);
 
   const cargarSucursales = useCallback(async () => {
     let { data, error: errSuc } = await supabase
@@ -320,27 +326,38 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
     Boolean(ultima) && (ultima.hay_luz === false || (temp !== null && (temp > maxEfectivo || temp < minEfectivo)));
 
   const actualizarRango = (nuevoMin, nuevoMax) => {
+    setEditandoRango(true);
     setTempMin(nuevoMin);
     setTempMax(nuevoMax);
-    if (Number.isFinite(nuevoMin) && Number.isFinite(nuevoMax) && nuevoMin < nuevoMax) {
-      try {
-        localStorage.setItem(`centinela_rango_${sucursalId}`, JSON.stringify({ min: nuevoMin, max: nuevoMax }));
-      } catch {
-        // Ignorar errores de localStorage
-      }
+  };
 
-      setSucursales((prev) =>
-        prev.map((s) => (s.id === sucursalId ? { ...s, temp_min: nuevoMin, temp_max: nuevoMax } : s))
-      );
+  const guardarRango = async () => {
+    if (!Number.isFinite(tempMin) || !Number.isFinite(tempMax) || tempMin >= tempMax) return;
+    setGuardandoRango(true);
+    setAviso('');
 
-      if (timerGuardarRangoRef.current) clearTimeout(timerGuardarRangoRef.current);
-      const idObjetivo = sucursalId;
-      timerGuardarRangoRef.current = setTimeout(async () => {
-        await supabase
-          .from('sucursales')
-          .update({ temp_min: nuevoMin, temp_max: nuevoMax })
-          .eq('id', idObjetivo);
-      }, 400);
+    try {
+      localStorage.setItem(`centinela_rango_${sucursalId}`, JSON.stringify({ min: tempMin, max: tempMax }));
+    } catch {
+      // Ignorar errores de localStorage
+    }
+
+    setSucursales((prev) =>
+      prev.map((s) => (s.id === sucursalId ? { ...s, temp_min: tempMin, temp_max: tempMax } : s))
+    );
+
+    const { error: errRango } = await supabase
+      .from('sucursales')
+      .update({ temp_min: tempMin, temp_max: tempMax })
+      .eq('id', sucursalId);
+
+    setGuardandoRango(false);
+    setEditandoRango(false);
+
+    if (errRango) {
+      setAviso('⚠️ Rango guardado localmente, pero falta agregar temp_min/temp_max en Supabase.');
+    } else {
+      setAviso(`✅ Rango seguro guardado (${tempMin.toFixed(1)} °C – ${tempMax.toFixed(1)} °C) para ${sucursalActual.nombre}.`);
     }
   };
 
@@ -635,16 +652,15 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
                 <span className="text-slate-400">°C</span>
               </div>
 
-              {(minEfectivo !== TEMP_MIN || maxEfectivo !== TEMP_MAX) && (
-                <button
-                  type="button"
-                  onClick={() => actualizarRango(TEMP_MIN, TEMP_MAX)}
-                  className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition"
-                  title="Restablecer 2 °C a 8 °C"
-                >
-                  ↺ 2–8 °C
-                </button>
-              )}
+              <button
+                type="button"
+                onClick={guardarRango}
+                disabled={!rangoValido || guardandoRango}
+                className="px-3 py-1 rounded-lg bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-semibold transition disabled:opacity-50"
+                title="Guardar rango mínimo y máximo"
+              >
+                {guardandoRango ? 'Guardando...' : 'Guardar'}
+              </button>
             </div>
           </div>
           {!rangoValido && (
