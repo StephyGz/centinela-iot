@@ -14,6 +14,7 @@ import { supabase, WHATSAPP_PHONE, CALLMEBOT_API_KEY } from './supabaseClient';
 const TEMP_MIN = 2.0;
 const TEMP_MAX = 8.0;
 const REFRESCO_MS = 5000;
+const OFFLINE_UMBRAL_MS = 45000; // 45 s sin lecturas del ESP32 = Fuera de línea
 const TELEGRAM_BOT_TOKEN = '9036157558:AAHBIwJGOjpKMSZs50HA3oestP8wRgCG61E';
 const TELEGRAM_CHAT_STEPHANY = '1216709702'; // Sucursal 1: Bodegón Central
 const TELEGRAM_CHAT_SCARLET = '1440539446';  // Sucursal 2: Farmacia Norte
@@ -324,6 +325,8 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
   const hayLuz = ultima ? ultima.hay_luz !== false : true;
   const emergencia =
     Boolean(ultima) && (ultima.hay_luz === false || (temp !== null && (temp > maxEfectivo || temp < minEfectivo)));
+  const msDesdeUltima = ultima?.created_at ? Date.now() - new Date(ultima.created_at).getTime() : Infinity;
+  const fueraDeLinea = sucursalId === 1 && msDesdeUltima > OFFLINE_UMBRAL_MS;
 
   const actualizarRango = (nuevoMin, nuevoMax) => {
     setEditandoRango(true);
@@ -434,8 +437,21 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
             <span className="text-2xl">❄️</span>
             <div>
               <h1 className="text-xl font-bold text-cyan-400 leading-tight">Centinela IoT</h1>
-              <p className="text-[11px] text-slate-400">
-                Nodo activo: <span className="text-cyan-300 font-mono">{codigoNodo}</span> · {sucursalActual.nombre}
+              <p className="text-[11px] text-slate-400 flex items-center gap-2">
+                <span>
+                  Nodo activo: <span className="text-cyan-300 font-mono">{codigoNodo}</span> · {sucursalActual.nombre}
+                </span>
+                {sucursalId === 1 && (
+                  <span
+                    className={`px-2 py-0.5 rounded-full font-semibold ${
+                      fueraDeLinea
+                        ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
+                        : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                    }`}
+                  >
+                    {fueraDeLinea ? '● Fuera de línea' : '● En línea'}
+                  </span>
+                )}
               </p>
             </div>
           </div>
@@ -527,6 +543,19 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
         {error && (
           <div className="rounded-xl border border-amber-500/50 bg-amber-500/10 text-amber-300 p-4 text-sm">
             ⚠️ {error}
+          </div>
+        )}
+
+        {fueraDeLinea && (
+          <div className="rounded-2xl border-2 border-amber-500/70 bg-amber-500/15 p-4 text-amber-200">
+            <p className="text-lg font-bold text-amber-300">
+              📡 ESP32 Fuera de línea — Sin conexión WiFi o sin lecturas recientes
+            </p>
+            <p className="text-xs mt-1 text-amber-200/90">
+              {ultima?.created_at
+                ? `Última lectura recibida: ${fechaHora(ultima.created_at)}. Esperando reconexión del ESP32-01...`
+                : 'Aún no se han recibido lecturas del ESP32-01.'}
+            </p>
           </div>
         )}
 
