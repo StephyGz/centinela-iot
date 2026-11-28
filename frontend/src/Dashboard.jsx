@@ -14,6 +14,10 @@ import { supabase, WHATSAPP_PHONE, CALLMEBOT_API_KEY } from './supabaseClient';
 const TEMP_MIN = 2.0;
 const TEMP_MAX = 8.0;
 const REFRESCO_MS = 5000;
+const TELEGRAM_BOT_TOKEN = '9036157558:AAHBIwJGOjpKMSZs50HA3oestP8wRgCG61E';
+const TELEGRAM_CHAT_STEPHANY = '1216709702'; // Sucursal 1: Bodegón Central
+const TELEGRAM_CHAT_SCARLET = '1440539446';  // Sucursal 2: Farmacia Norte
+const TELEGRAM_CHAT_ALIRIO = '1865483108';   // Sucursal 3+: Respaldo multi-cliente
 
 // Respaldo por si las tablas de Supabase aún no se han creado.
 const SUCURSALES_RESPALDO = [
@@ -69,7 +73,7 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
   const sucursalActual = sucursales.find((s) => s.id === sucursalId) || SUCURSALES_RESPALDO[0];
   const codigoNodo = `ESP32-${String(sucursalActual.id).padStart(2, '0')}`;
 
-  const enviarWhatsAppCallMeBot = useCallback(
+  const enviarAlertaPruebaMultiCanal = useCallback(
     async ({ tipoEvento, motivoTexto, lecturaRef, sucursalObj, minLim, maxLim }) => {
       const suc = sucursalObj || sucursalActual;
       const cod = `ESP32-${String(suc.id).padStart(2, '0')}`;
@@ -92,23 +96,48 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
       const texto =
         `*ALERTA CENTINELA IoT*\n` +
         `Evento: ${motivoTexto}\n` +
-        `Nodo: ${cod} (${suc.nombre})\n` +
+        `Sucursal: ${suc.nombre} (${cod})\n` +
+        `Teléfono registrado: ${telefono}\n` +
         `Estado eléctrico: ${estadoLuzTexto}\n` +
         `Temperatura actual: ${tempTexto} (Rango: ${rangoTexto})\n` +
         `Humedad: ${humTexto}\n\n` +
         `Monitorea la temperatura en vivo aquí:\n${panelUrl}`;
 
-      const url = `https://api.callmebot.com/whatsapp.php?phone=${encodeURIComponent(
-        telefono
-      )}&text=${encodeURIComponent(texto)}&apikey=${encodeURIComponent(apikey)}`;
+      // Enrutamiento silencioso Multi-Cliente vía Telegram (@centila_cit_bot)
+      const chatIdDestino =
+        suc.id === 1
+          ? TELEGRAM_CHAT_STEPHANY
+          : suc.id === 2
+          ? TELEGRAM_CHAT_SCARLET
+          : TELEGRAM_CHAT_ALIRIO;
 
-      try {
-        await fetch(url, { method: 'GET', mode: 'no-cors' });
-      } catch {
-        new Image().src = url;
+      const telegramUrl = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage?chat_id=${encodeURIComponent(
+        chatIdDestino
+      )}&text=${encodeURIComponent(texto)}`;
+
+      const envios = [
+        fetch(telegramUrl, { method: 'GET' }).catch(() => {
+          new Image().src = telegramUrl;
+        }),
+      ];
+
+      // Sucursal 1 (Bodegón Central) envía también a WhatsApp (CallMeBot)
+      if (suc.id === 1) {
+        const whatsappUrl = `https://api.callmebot.com/whatsapp.php?phone=${encodeURIComponent(
+          telefono
+        )}&text=${encodeURIComponent(texto)}&apikey=${encodeURIComponent(apikey)}`;
+
+        envios.push(
+          fetch(whatsappUrl, { method: 'GET', mode: 'no-cors' }).catch(() => {
+            new Image().src = whatsappUrl;
+          })
+        );
       }
 
-      const resumenEvento = `Alerta enviada a ${telefono} | ${cod} (${suc.nombre}) | ${motivoTexto} | ${tempTexto} | ${estadoLuzTexto}`;
+      await Promise.allSettled(envios);
+
+      const canalesTexto = suc.id === 1 ? `WhatsApp (${telefono}) + Telegram` : `Telegram (${suc.nombre})`;
+      const resumenEvento = `Alerta de prueba enviada vía ${canalesTexto} | ${cod} (${suc.nombre}) | Tel: ${telefono} | ${tempTexto} | ${estadoLuzTexto}`;
       const nuevoEvento = {
         sucursal_id: suc.id,
         tipo_evento: tipoEvento,
@@ -119,7 +148,7 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
       if (errInsert) {
         setEventos((prev) => [{ id: Date.now(), created_at: new Date().toISOString(), ...nuevoEvento }, ...prev]);
       }
-      return { telefono, errInsert, resumenEvento };
+      return { telefono, errInsert, resumenEvento, canalesTexto };
     },
     [sucursalActual]
   );
@@ -284,9 +313,9 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
   const enviarPruebaWhatsApp = async () => {
     setEnviando(true);
     setAviso('');
-    const { telefono, errInsert } = await enviarWhatsAppCallMeBot({
-      tipoEvento: 'PRUEBA_WHATSAPP',
-      motivoTexto: 'PRUEBA DE CONEXIÓN WHATSAPP',
+    const { errInsert, canalesTexto } = await enviarAlertaPruebaMultiCanal({
+      tipoEvento: 'PRUEBA_ALERTA',
+      motivoTexto: 'PRUEBA DE CONEXIÓN DE ALERTAS',
       lecturaRef: ultima,
       sucursalObj: sucursalActual,
       minLim: minEfectivo,
@@ -295,9 +324,9 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
     setEnviando(false);
 
     if (errInsert) {
-      setAviso(`✅ Solicitud de WhatsApp enviada a ${telefono}. (Ejecuta supabase_schema.sql para guardar en BD).`);
+      setAviso(`✅ Alerta de prueba enviada vía ${canalesTexto}. (Ejecuta supabase_schema.sql para guardar en BD).`);
     } else {
-      setAviso(`✅ Alerta de prueba enviada a WhatsApp (${telefono}) y registrada en la base de datos.`);
+      setAviso(`✅ Alerta de prueba enviada vía ${canalesTexto} y registrada en la base de datos.`);
       cargarDatos();
     }
   };
@@ -395,25 +424,26 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
           >
             <div className="flex-1 min-w-[200px]">
               <label className="block text-xs text-slate-400 mb-1">
-                Nombre de la nevera, cava o espacio a monitorear
+                Nombre de la sucursal
               </label>
               <input
                 type="text"
-                placeholder="Ej. Laboratorio Central - Nevera Vacunas"
+                placeholder="Ej. Clínica Sur"
                 value={nuevoNombreNodo}
                 onChange={(e) => setNuevoNombreNodo(e.target.value)}
                 className="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-sm outline-none focus:border-cyan-500"
                 required
               />
             </div>
-            <div className="w-full sm:w-52">
-              <label className="block text-xs text-slate-400 mb-1">WhatsApp de alerta</label>
+            <div className="w-full sm:w-56">
+              <label className="block text-xs text-slate-400 mb-1">Número de teléfono de alertas</label>
               <input
                 type="text"
                 placeholder="+584125002119"
                 value={nuevoTelefonoNodo}
                 onChange={(e) => setNuevoTelefonoNodo(e.target.value)}
                 className="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-sm outline-none focus:border-cyan-500 font-mono"
+                required
               />
             </div>
             <div className="flex gap-2">
@@ -626,7 +656,7 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <div className="flex items-center gap-2">
-                <h2 className="text-lg font-semibold">Alertas vía WhatsApp (CallMeBot)</h2>
+                <h2 className="text-lg font-semibold">Alertas (WhatsApp / Telegram)</h2>
                 <span className="px-2 py-0.5 text-xs font-semibold rounded-full bg-slate-800 text-slate-300 border border-slate-700">
                   {sucursalId === 1 ? 'Hardware ESP32 conectado' : 'Prueba manual en panel'}
                 </span>
@@ -636,15 +666,13 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
                 <span className="text-slate-200 font-mono">{sucursalActual.telefono_alerta || WHATSAPP_PHONE}</span>
               </p>
             </div>
-            {sucursalId !== 1 && (
-              <button
-                onClick={enviarPruebaWhatsApp}
-                disabled={enviando}
-                className="px-5 py-3 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold transition shadow-lg shadow-emerald-500/20 disabled:opacity-50"
-              >
-                {enviando ? 'Enviando...' : '📲 Enviar Alerta de Prueba a WhatsApp'}
-              </button>
-            )}
+            <button
+              onClick={enviarPruebaWhatsApp}
+              disabled={enviando}
+              className="px-5 py-3 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold transition shadow-lg shadow-emerald-500/20 disabled:opacity-50"
+            >
+              {enviando ? 'Enviando...' : '📲 Enviar Alerta de Prueba'}
+            </button>
           </div>
 
           {/* Controles de prueba solo en nodos demo (Farmacia Norte / nuevos); Bodegón Central recibe datos reales del ESP32 */}
@@ -713,9 +741,7 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
                 {eventos.length === 0 && (
                   <tr>
                     <td colSpan={3} className="py-4 text-center text-slate-500">
-                      {sucursalId === 1
-                        ? 'Aún no hay alertas registradas para este nodo.'
-                        : 'Aún no hay alertas registradas. Pulsa “Enviar Alerta de Prueba a WhatsApp” para probar.'}
+                      Aún no hay alertas registradas. Pulsa “Enviar Alerta de Prueba” para probar.
                     </td>
                   </tr>
                 )}
@@ -725,7 +751,7 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
                     <td className="py-2 pr-4">
                       <span
                         className={`px-2 py-1 rounded text-xs font-semibold ${
-                          e.tipo_evento === 'PRUEBA_WHATSAPP'
+                          e.tipo_evento === 'PRUEBA_WHATSAPP' || e.tipo_evento === 'PRUEBA_ALERTA'
                             ? 'bg-cyan-500/20 text-cyan-300'
                             : 'bg-red-500/20 text-red-300'
                         }`}

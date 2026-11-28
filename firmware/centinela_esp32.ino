@@ -47,6 +47,8 @@ const char* SUPABASE_ANON_KEY = "sb_publishable_9MtdkYU1vfIzuvKc-4vBDA_0BJPCTbp"
 
 const char* WHATSAPP_PHONE    = "+584125002119";
 const char* CALLMEBOT_API_KEY = "7650246";
+const char* TELEGRAM_TOKEN    = "9036157558:AAHBIwJGOjpKMSZs50HA3oestP8wRgCG61E";
+const char* TELEGRAM_CHAT_ID  = "1216709702"; // Stephany
 
 const int   SUCURSAL_ID       = 1; // 1 = Bodegon Central, 2 = Farmacia Norte
 const char* NOMBRE_SUCURSAL   = "Bodegon Central";
@@ -293,9 +295,34 @@ void guardarEventoAlerta(const String& tipo, const String& mensaje) {
   http.end();
 }
 
+bool enviarAlertaTelegram(const String& mensaje) {
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("[Telegram] No se pudo enviar: sin conexion WiFi.");
+    return false;
+  }
+
+  WiFiClientSecure client;
+  client.setInsecure();
+  HTTPClient http;
+
+  String url = "https://api.telegram.org/bot" + String(TELEGRAM_TOKEN) +
+               "/sendMessage?chat_id=" + String(TELEGRAM_CHAT_ID) +
+               "&text=" + codificarTextoUrl(mensaje);
+
+  Serial.println("[Telegram] Enviando alerta de respaldo...");
+  if (!http.begin(client, url)) return false;
+
+  http.setTimeout(15000);
+  int httpCode = http.GET();
+  Serial.printf("[Telegram] Respuesta HTTP: %d\n", httpCode);
+  http.end();
+
+  return (httpCode >= 200 && httpCode < 400);
+}
+
 bool enviarAlertaWhatsApp(const String& mensaje) {
   if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("[WhatsApp] No se pudo enviar: sin conexion WiFi.");
+    Serial.println("[WhatsApp/Telegram] No se pudo enviar: sin conexion WiFi.");
     return false;
   }
 
@@ -308,14 +335,19 @@ bool enviarAlertaWhatsApp(const String& mensaje) {
                "&apikey=" + String(CALLMEBOT_API_KEY);
 
   Serial.println("[WhatsApp] Enviando alerta: " + mensaje);
-  if (!http.begin(client, url)) return false;
+  bool okWhatsApp = false;
+  if (http.begin(client, url)) {
+    http.setTimeout(15000);
+    int httpCode = http.GET();
+    Serial.printf("[WhatsApp] Respuesta HTTP: %d\n", httpCode);
+    http.end();
+    okWhatsApp = (httpCode >= 200 && httpCode < 400);
+  }
 
-  http.setTimeout(15000);
-  int httpCode = http.GET();
-  Serial.printf("[WhatsApp] Respuesta HTTP: %d\n", httpCode);
-  http.end();
+  // Canal de respaldo paralelo (Failover) via Telegram Bot API
+  bool okTelegram = enviarAlertaTelegram(mensaje);
 
-  return (httpCode >= 200 && httpCode < 400);
+  return okWhatsApp || okTelegram;
 }
 
 void verificarAlertasTemperatura() {
@@ -454,13 +486,21 @@ void loop() {
         ultimoEnvio = millis();
         enviarAlertaWhatsApp(msg);
       } else {
-        Serial.println("[INFO] Suministro electrico restablecido.");
+        Serial.println("[INFO] Suministro electrico restablecido. Enviando alerta...");
         String codigoNodo = "ESP32-" + String(SUCURSAL_ID < 10 ? "0" : "") + String(SUCURSAL_ID);
-        String msg = "Luz restablecida en " + codigoNodo + " (" + String(NOMBRE_SUCURSAL) +
-                     "). Temperatura actual: " + String(temperatura, 1) + " C.";
-        guardarEventoAlerta("LUZ_RESTABLECIDA", msg);
+        String msg = "*AVISO - CENTINELA IoT*\n"
+                     "Suministro electrico *RESTABLECIDO* en:\n"
+                     "- Nodo: " + codigoNodo + " (" + String(NOMBRE_SUCURSAL) + ")\n"
+                     "- Temperatura actual: " + String(temperatura, 1) + " C\n"
+                     "- Humedad: " + String(humedad, 0) + " %\n"
+                     "- Estado electrico: CON LUZ (Red Normal)\n\n"
+                     "Monitorea la temperatura en vivo aqui:\n" + String(PANEL_URL);
+        String resumen = "Luz restablecida en " + codigoNodo + " (" + String(NOMBRE_SUCURSAL) +
+                         "). Temperatura actual: " + String(temperatura, 1) + " C.";
+        guardarEventoAlerta("LUZ_RESTABLECIDA", resumen);
         enviarDatosSupabase();
         ultimoEnvio = millis();
+        enviarAlertaWhatsApp(msg);
       }
       actualizarPantallaOLED();
     }
