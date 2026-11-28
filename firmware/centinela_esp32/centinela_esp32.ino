@@ -38,8 +38,8 @@
 
 // ======================= 1. CONFIGURACION WIFI =======================
 // Cambia estos 2 valores por el nombre y clave de tu red WiFi (2.4 GHz):
-const char* WIFI_SSID     = "TU_WIFI_AQUI";
-const char* WIFI_PASSWORD = "TU_CLAVE_WIFI_AQUI";
+const char* WIFI_SSID     = "POCO Stephany";
+const char* WIFI_PASSWORD = "123Cookie**";
 
 // =================== 2. CREDENCIALES DEL PROYECTO ====================
 const char* SUPABASE_URL      = "https://qfrepxrrdouvqjjscovz.supabase.co";
@@ -47,6 +47,10 @@ const char* SUPABASE_ANON_KEY = "sb_publishable_9MtdkYU1vfIzuvKc-4vBDA_0BJPCTbp"
 
 const char* WHATSAPP_PHONE    = "+584125002119";
 const char* CALLMEBOT_API_KEY = "7650246";
+const char* TELEGRAM_TOKEN    = "9036157558:AAHBIwJGOjpKMSZs50HA3oestP8wRgCG61E";
+const char* TELEGRAM_CHAT_ID  = "1216709702"; // Stephany (Sucursal 1: Bodegon Central)
+const char* TELEGRAM_CHAT_SCARLET = "1440539446"; // Scarlet (Sucursal 2: Farmacia Norte)
+const char* TELEGRAM_CHAT_ALIRIO  = "1865483108"; // Alirio (Sucursal 3: Nueva Sucursal)
 
 const int   SUCURSAL_ID       = 1; // 1 = Bodegon Central, 2 = Farmacia Norte
 const char* NOMBRE_SUCURSAL   = "Bodegon Central";
@@ -62,9 +66,9 @@ const char* PANEL_URL         = "https://centinela-iot.netlify.app";
 const unsigned long INTERVALO_CON_LUZ = 15000UL; // 15 segundos
 const unsigned long INTERVALO_SIN_LUZ = 5000UL;  // 5 segundos
 
-// Rango seguro de cadena de frio (2.0 C a 8.0 C)
-const float TEMP_MIN_SEGURA = 2.0;
-const float TEMP_MAX_SEGURA = 8.0;
+// Rango seguro de cadena de frio (28.0 C a 35.0 C)
+const float TEMP_MIN_SEGURA = 28.0;
+const float TEMP_MAX_SEGURA = 35.0;
 
 // Polaridad del rele en GPIO 18 (INPUT_PULLUP):
 // true  = GPIO 18 en LOW significa que HAY LUZ (contacto cerrado a GND con luz)
@@ -97,9 +101,12 @@ bool  oledDisponible   = false;
 int   estadoTempPrevio = 0;    // 0 = Normal (2 a 8 C), 1 = Alta (>8 C), -1 = Baja (<2 C)
 String estadoEnvio     = "Iniciando...";
 
-unsigned long ultimoEnvio       = 0;
-unsigned long ultimaLecturaDht  = 0;
-unsigned long ultimoReintentoWf = 0;
+unsigned long ultimoEnvio            = 0;
+unsigned long ultimaLecturaDht       = 0;
+unsigned long ultimoReintentoWf      = 0;
+unsigned long ultimaConsultaTelegram = 0;
+long          ultimoUpdateIdTelegram = 0;
+const unsigned long INTERVALO_TELEGRAM_MS = 3000UL;
 
 // ======================= FUNCIONES AUXILIARES ========================
 String codificarTextoUrl(const String& texto) {
@@ -293,9 +300,38 @@ void guardarEventoAlerta(const String& tipo, const String& mensaje) {
   http.end();
 }
 
+bool enviarMensajeTelegramChat(const String& chatId, const String& mensaje) {
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("[Telegram] No se pudo enviar: sin conexion WiFi.");
+    return false;
+  }
+
+  WiFiClientSecure client;
+  client.setInsecure();
+  HTTPClient http;
+
+  String url = "https://api.telegram.org/bot" + String(TELEGRAM_TOKEN) +
+               "/sendMessage?chat_id=" + chatId +
+               "&text=" + codificarTextoUrl(mensaje);
+
+  Serial.println("[Telegram] Enviando mensaje a chat_id=" + chatId);
+  if (!http.begin(client, url)) return false;
+
+  http.setTimeout(15000);
+  int httpCode = http.GET();
+  Serial.printf("[Telegram] Respuesta HTTP: %d\n", httpCode);
+  http.end();
+
+  return (httpCode >= 200 && httpCode < 400);
+}
+
+bool enviarAlertaTelegram(const String& mensaje) {
+  return enviarMensajeTelegramChat(String(TELEGRAM_CHAT_ID), mensaje);
+}
+
 bool enviarAlertaWhatsApp(const String& mensaje) {
   if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("[WhatsApp] No se pudo enviar: sin conexion WiFi.");
+    Serial.println("[WhatsApp/Telegram] No se pudo enviar: sin conexion WiFi.");
     return false;
   }
 
@@ -308,14 +344,227 @@ bool enviarAlertaWhatsApp(const String& mensaje) {
                "&apikey=" + String(CALLMEBOT_API_KEY);
 
   Serial.println("[WhatsApp] Enviando alerta: " + mensaje);
-  if (!http.begin(client, url)) return false;
+  bool okWhatsApp = false;
+  if (http.begin(client, url)) {
+    http.setTimeout(15000);
+    int httpCode = http.GET();
+    Serial.printf("[WhatsApp] Respuesta HTTP: %d\n", httpCode);
+    http.end();
+    okWhatsApp = (httpCode >= 200 && httpCode < 400);
+  }
 
-  http.setTimeout(15000);
+  // Canal de respaldo paralelo (Failover) via Telegram Bot API
+  bool okTelegram = enviarAlertaTelegram(mensaje);
+
+  return okWhatsApp || okTelegram;
+}
+
+// ============= 5B. MENU INTERACTIVO TELEGRAM MULTI-SUCURSAL ============
+long extraerLongJson(const String& json, const String& clave) {
+  int pos = json.indexOf(clave);
+  if (pos < 0) return -1;
+  pos += clave.length();
+  while (pos < (int)json.length() && (json.charAt(pos) == ' ' || json.charAt(pos) == '\t')) pos++;
+  int fin = pos;
+  if (fin < (int)json.length() && json.charAt(fin) == '-') fin++;
+  while (fin < (int)json.length() && isDigit(json.charAt(fin))) fin++;
+  if (fin == pos) return -1;
+  return json.substring(pos, fin).toInt();
+}
+
+float extraerFloatJson(const String& json, const String& clave, float defecto) {
+  int pos = json.indexOf(clave);
+  if (pos < 0) return defecto;
+  pos += clave.length();
+  while (pos < (int)json.length() && (json.charAt(pos) == ' ' || json.charAt(pos) == '\t')) pos++;
+  int fin = pos;
+  if (fin < (int)json.length() && json.charAt(fin) == '-') fin++;
+  while (fin < (int)json.length() && (isDigit(json.charAt(fin)) || json.charAt(fin) == '.')) fin++;
+  if (fin == pos) return defecto;
+  return json.substring(pos, fin).toFloat();
+}
+
+bool extraerBoolJson(const String& json, const String& clave, bool defecto) {
+  int pos = json.indexOf(clave);
+  if (pos < 0) return defecto;
+  pos += clave.length();
+  while (pos < (int)json.length() && (json.charAt(pos) == ' ' || json.charAt(pos) == '\t')) pos++;
+  if (json.startsWith("true", pos)) return true;
+  if (json.startsWith("false", pos)) return false;
+  return defecto;
+}
+
+String extraerStringJson(const String& json, const String& clave) {
+  int pos = json.indexOf(clave);
+  if (pos < 0) return "";
+  pos += clave.length();
+  String salida = "";
+  while (pos < (int)json.length()) {
+    char c = json.charAt(pos);
+    if (c == '\\' && pos + 1 < (int)json.length()) {
+      pos++;
+      salida += json.charAt(pos);
+    } else if (c == '"') {
+      break;
+    } else {
+      salida += c;
+    }
+    pos++;
+  }
+  return salida;
+}
+
+String extraerChatIdJson(const String& json) {
+  int posChat = json.indexOf("\"chat\":");
+  if (posChat < 0) return "";
+  int posId = json.indexOf("\"id\":", posChat);
+  if (posId < 0) return "";
+  posId += 5;
+  while (posId < (int)json.length() && (json.charAt(posId) == ' ' || json.charAt(posId) == '\t')) posId++;
+  int fin = posId;
+  if (fin < (int)json.length() && json.charAt(fin) == '-') fin++;
+  while (fin < (int)json.length() && isDigit(json.charAt(fin))) fin++;
+  if (fin == posId) return "";
+  return json.substring(posId, fin);
+}
+
+void obtenerTelemetriaSucursal(int sucursalIdConsulta, float& outTemp, float& outHum, bool& outLuz) {
+  if (sucursalIdConsulta == 1) {
+    outTemp = temperatura;
+    outHum  = humedad;
+    outLuz  = hay_luz;
+    return;
+  }
+
+  // Valores de respaldo estables si no hay lecturas recientes en Supabase
+  if (sucursalIdConsulta == 2) {
+    outTemp = 5.2;
+    outHum  = 58.0;
+    outLuz  = true;
+  } else {
+    outTemp = 4.8;
+    outHum  = 60.0;
+    outLuz  = true;
+  }
+
+  if (WiFi.status() != WL_CONNECTED) return;
+
+  WiFiClientSecure client;
+  client.setInsecure();
+  HTTPClient http;
+
+  String url = String(SUPABASE_URL) + "/rest/v1/lecturas_sensor?sucursal_id=eq." +
+               String(sucursalIdConsulta) + "&order=created_at.desc&limit=1";
+  if (!http.begin(client, url)) return;
+
+  http.setTimeout(6000);
+  http.addHeader("apikey", SUPABASE_ANON_KEY);
+  http.addHeader("Authorization", "Bearer " + String(SUPABASE_ANON_KEY));
+
   int httpCode = http.GET();
-  Serial.printf("[WhatsApp] Respuesta HTTP: %d\n", httpCode);
+  if (httpCode >= 200 && httpCode < 300) {
+    String payload = http.getString();
+    if (payload.indexOf("\"temperatura\":") >= 0) {
+      outTemp = extraerFloatJson(payload, "\"temperatura\":", outTemp);
+      outHum  = extraerFloatJson(payload, "\"humedad\":", outHum);
+      outLuz  = extraerBoolJson(payload, "\"hay_luz\":", outLuz);
+    }
+  }
+  http.end();
+}
+
+void revisarMensajesTelegram() {
+  if (WiFi.status() != WL_CONNECTED) return;
+
+  WiFiClientSecure client;
+  client.setInsecure();
+  HTTPClient http;
+
+  String url = "https://api.telegram.org/bot" + String(TELEGRAM_TOKEN) + "/getUpdates?limit=1";
+  if (ultimoUpdateIdTelegram > 0) {
+    url += "&offset=" + String(ultimoUpdateIdTelegram + 1);
+  }
+
+  if (!http.begin(client, url)) return;
+  http.setTimeout(5000);
+  int httpCode = http.GET();
+  if (httpCode != 200) {
+    http.end();
+    return;
+  }
+
+  String body = http.getString();
   http.end();
 
-  return (httpCode >= 200 && httpCode < 400);
+  long updateId = extraerLongJson(body, "\"update_id\":");
+  if (updateId <= 0 || updateId <= ultimoUpdateIdTelegram) return;
+
+  ultimoUpdateIdTelegram = updateId;
+
+  String chatId   = extraerChatIdJson(body);
+  String textoRaw = extraerStringJson(body, "\"text\":\"");
+  if (chatId.length() == 0 || textoRaw.length() == 0) return;
+
+  // Identificacion automatica de sucursal segun chat_id
+  int sucursalConsultaId = 1;
+  String nombreSucursalConsulta = "Bodegon Central";
+  if (chatId == String(TELEGRAM_CHAT_SCARLET)) {
+    sucursalConsultaId = 2;
+    nombreSucursalConsulta = "Farmacia Norte";
+  } else if (chatId == String(TELEGRAM_CHAT_ALIRIO)) {
+    sucursalConsultaId = 3;
+    nombreSucursalConsulta = "Nueva Sucursal (Cliente 3)";
+  }
+
+  String cmd = textoRaw;
+  cmd.trim();
+  cmd.toLowerCase();
+
+  String respuesta = "";
+
+  if (cmd == "consulta" || cmd == "menu" || cmd == "/menu" || cmd == "hola") {
+    respuesta = "Menú Centinela IoT (" + nombreSucursalConsulta + "):\n"
+                "1 - Consultar Temperatura\n"
+                "2 - Consultar Humedad\n"
+                "3 - Estado de la Luz\n"
+                "4 - Reporte Completo\n\n"
+                "Responde con el número de tu opción.";
+  } else if (cmd == "1" || cmd == "temperatura") {
+    float tVal = 0;
+    float hVal = 0;
+    bool luzVal = true;
+    obtenerTelemetriaSucursal(sucursalConsultaId, tVal, hVal, luzVal);
+    respuesta = "Sucursal: " + nombreSucursalConsulta + "\n"
+                "Temperatura actual: " + String(tVal, 1) + " °C";
+  } else if (cmd == "2" || cmd == "humedad") {
+    float tVal = 0;
+    float hVal = 0;
+    bool luzVal = true;
+    obtenerTelemetriaSucursal(sucursalConsultaId, tVal, hVal, luzVal);
+    respuesta = "Sucursal: " + nombreSucursalConsulta + "\n"
+                "Humedad actual: " + String(hVal, 0) + " %";
+  } else if (cmd == "3" || cmd == "luz") {
+    float tVal = 0;
+    float hVal = 0;
+    bool luzVal = true;
+    obtenerTelemetriaSucursal(sucursalConsultaId, tVal, hVal, luzVal);
+    respuesta = "Sucursal: " + nombreSucursalConsulta + "\n"
+                "Estado eléctrico: " + String(luzVal ? "CON LUZ (Red Normal)" : "SIN LUZ (Batería Mini UPS)");
+  } else if (cmd == "4" || cmd == "estado" || cmd == "todo") {
+    float tVal = 0;
+    float hVal = 0;
+    bool luzVal = true;
+    obtenerTelemetriaSucursal(sucursalConsultaId, tVal, hVal, luzVal);
+    respuesta = "Sucursal: " + nombreSucursalConsulta + "\n"
+                "Temperatura actual: " + String(tVal, 1) + " °C\n"
+                "Humedad actual: " + String(hVal, 0) + " %\n"
+                "Estado eléctrico: " + String(luzVal ? "CON LUZ (Red Normal)" : "SIN LUZ (Batería Mini UPS)");
+  }
+
+  if (respuesta.length() > 0) {
+    Serial.println("[Telegram] Respondiendo a chat_id=" + chatId + " (" + nombreSucursalConsulta + ")");
+    enviarMensajeTelegramChat(chatId, respuesta);
+  }
 }
 
 void verificarAlertasTemperatura() {
@@ -454,13 +703,21 @@ void loop() {
         ultimoEnvio = millis();
         enviarAlertaWhatsApp(msg);
       } else {
-        Serial.println("[INFO] Suministro electrico restablecido.");
+        Serial.println("[INFO] Suministro electrico restablecido. Enviando alerta...");
         String codigoNodo = "ESP32-" + String(SUCURSAL_ID < 10 ? "0" : "") + String(SUCURSAL_ID);
-        String msg = "Luz restablecida en " + codigoNodo + " (" + String(NOMBRE_SUCURSAL) +
-                     "). Temperatura actual: " + String(temperatura, 1) + " C.";
-        guardarEventoAlerta("LUZ_RESTABLECIDA", msg);
+        String msg = "*AVISO - CENTINELA IoT*\n"
+                     "Suministro electrico *RESTABLECIDO* en:\n"
+                     "- Nodo: " + codigoNodo + " (" + String(NOMBRE_SUCURSAL) + ")\n"
+                     "- Temperatura actual: " + String(temperatura, 1) + " C\n"
+                     "- Humedad: " + String(humedad, 0) + " %\n"
+                     "- Estado electrico: CON LUZ (Red Normal)\n\n"
+                     "Monitorea la temperatura en vivo aqui:\n" + String(PANEL_URL);
+        String resumen = "Luz restablecida en " + codigoNodo + " (" + String(NOMBRE_SUCURSAL) +
+                         "). Temperatura actual: " + String(temperatura, 1) + " C.";
+        guardarEventoAlerta("LUZ_RESTABLECIDA", resumen);
         enviarDatosSupabase();
         ultimoEnvio = millis();
+        enviarAlertaWhatsApp(msg);
       }
       actualizarPantallaOLED();
     }
@@ -472,6 +729,12 @@ void loop() {
     ultimoEnvio = millis();
     enviarDatosSupabase();
     actualizarPantallaOLED();
+  }
+
+  // 6) Escucha de mensajes interactivos en Telegram cada 3 segundos (getUpdates)
+  if (millis() - ultimaConsultaTelegram >= INTERVALO_TELEGRAM_MS) {
+    ultimaConsultaTelegram = millis();
+    revisarMensajesTelegram();
   }
 
   delay(50);

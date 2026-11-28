@@ -50,7 +50,7 @@ export default function Login({ onLogin }) {
           <div className="text-5xl mb-2">❄️</div>
           <h1 className="text-3xl font-bold text-cyan-400">Centinela IoT</h1>
           <p className="text-slate-400 mt-1 text-sm">
-            Plataforma multi-nodo de monitoreo de cadena de frío (2 °C – 8 °C)
+            Plataforma multi-nodo de monitoreo de cadena de frío
           </p>
         </div>
 

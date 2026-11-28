@@ -22,7 +22,7 @@ const TELEGRAM_CHAT_ALIRIO = '1865483108';   // Sucursal 3+: Respaldo multi-clie
 // Respaldo por si las tablas de Supabase aún no se han creado.
 const SUCURSALES_RESPALDO = [
   { id: 1, nombre: 'Bodegón Central', telefono_alerta: WHATSAPP_PHONE, api_key_whatsapp: CALLMEBOT_API_KEY },
-  { id: 2, nombre: 'Farmacia Norte', telefono_alerta: WHATSAPP_PHONE, api_key_whatsapp: CALLMEBOT_API_KEY },
+  { id: 2, nombre: 'Farmacia Norte', telefono_alerta: '+584169410586', api_key_whatsapp: CALLMEBOT_API_KEY },
 ];
 
 const LECTURAS_DEMO = [
@@ -65,7 +65,7 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
   const [ultimaAct, setUltimaAct] = useState(null);
   const [mostrarNuevoNodo, setMostrarNuevoNodo] = useState(false);
   const [nuevoNombreNodo, setNuevoNombreNodo] = useState('');
-  const [nuevoTelefonoNodo, setNuevoTelefonoNodo] = useState(WHATSAPP_PHONE);
+  const [nuevoTelefonoNodo, setNuevoTelefonoNodo] = useState('+58');
   const [creandoNodo, setCreandoNodo] = useState(false);
   const [tempMin, setTempMin] = useState(TEMP_MIN);
   const [tempMax, setTempMax] = useState(TEMP_MAX);
@@ -178,7 +178,9 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
       .from('sucursales')
       .select('id, nombre, telefono_alerta, api_key_whatsapp')
       .order('id');
-    if (!errSuc && data && data.length) setSucursales(data);
+    if (!errSuc && data && data.length) {
+      setSucursales(data.map((s) => (s.id === 2 ? { ...s, telefono_alerta: '+584169410586' } : s)));
+    }
   }, []);
 
   // Cargar sucursales al iniciar
@@ -197,7 +199,7 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
       .from('sucursales')
       .insert({
         nombre: nombreLimpio,
-        telefono_alerta: nuevoTelefonoNodo.trim() || WHATSAPP_PHONE,
+        telefono_alerta: nuevoTelefonoNodo.trim() || '+58',
         api_key_whatsapp: CALLMEBOT_API_KEY,
       })
       .select()
@@ -220,6 +222,7 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
     await cargarSucursales();
     setSucursalId(creado.id);
     setNuevoNombreNodo('');
+    setNuevoTelefonoNodo('+58');
     setMostrarNuevoNodo(false);
     setCreandoNodo(false);
     setAviso(
@@ -439,7 +442,7 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
               <label className="block text-xs text-slate-400 mb-1">Número de teléfono de alertas</label>
               <input
                 type="text"
-                placeholder="+584125002119"
+                placeholder="+584120000000"
                 value={nuevoTelefonoNodo}
                 onChange={(e) => setNuevoTelefonoNodo(e.target.value)}
                 className="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-sm outline-none focus:border-cyan-500 font-mono"
