@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   LineChart,
   Line,
@@ -21,8 +21,8 @@ const TELEGRAM_CHAT_ALIRIO = '1865483108';   // Sucursal 3+: Respaldo multi-clie
 
 // Respaldo por si las tablas de Supabase aún no se han creado.
 const SUCURSALES_RESPALDO = [
-  { id: 1, nombre: 'Bodegón Central', telefono_alerta: WHATSAPP_PHONE, api_key_whatsapp: CALLMEBOT_API_KEY },
-  { id: 2, nombre: 'Farmacia Norte', telefono_alerta: '+584169410586', api_key_whatsapp: CALLMEBOT_API_KEY },
+  { id: 1, nombre: 'Bodegón Central', telefono_alerta: WHATSAPP_PHONE, api_key_whatsapp: CALLMEBOT_API_KEY, temp_min: TEMP_MIN, temp_max: TEMP_MAX },
+  { id: 2, nombre: 'Farmacia Norte', telefono_alerta: '+584169410586', api_key_whatsapp: CALLMEBOT_API_KEY, temp_min: TEMP_MIN, temp_max: TEMP_MAX },
 ];
 
 const LECTURAS_DEMO = [
@@ -69,6 +69,7 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
   const [creandoNodo, setCreandoNodo] = useState(false);
   const [tempMin, setTempMin] = useState(TEMP_MIN);
   const [tempMax, setTempMax] = useState(TEMP_MAX);
+  const timerGuardarRangoRef = useRef(null);
 
   const sucursalActual = sucursales.find((s) => s.id === sucursalId) || SUCURSALES_RESPALDO[0];
   const codigoNodo = `ESP32-${String(sucursalActual.id).padStart(2, '0')}`;
@@ -153,9 +154,19 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
     [sucursalActual]
   );
 
-  // Cargar rango personalizado de la nevera/ESP32 seleccionada y limpiar avisos previos
+  // Cargar rango personalizado desde Supabase (con respaldo localStorage) al cambiar de sucursal o actualizarse en BD
   useEffect(() => {
     setAviso('');
+    const suc = sucursales.find((s) => s.id === sucursalId);
+    const minDb = suc && suc.temp_min !== null && suc.temp_min !== undefined ? Number(suc.temp_min) : NaN;
+    const maxDb = suc && suc.temp_max !== null && suc.temp_max !== undefined ? Number(suc.temp_max) : NaN;
+
+    if (Number.isFinite(minDb) && Number.isFinite(maxDb) && minDb < maxDb) {
+      setTempMin(minDb);
+      setTempMax(maxDb);
+      return;
+    }
+
     try {
       const guardado = localStorage.getItem(`centinela_rango_${sucursalId}`);
       if (guardado) {
@@ -171,13 +182,24 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
     }
     setTempMin(TEMP_MIN);
     setTempMax(TEMP_MAX);
-  }, [sucursalId]);
+  }, [sucursalId, sucursales]);
 
   const cargarSucursales = useCallback(async () => {
-    const { data, error: errSuc } = await supabase
+    let { data, error: errSuc } = await supabase
       .from('sucursales')
-      .select('id, nombre, telefono_alerta, api_key_whatsapp')
+      .select('id, nombre, telefono_alerta, api_key_whatsapp, temp_min, temp_max')
       .order('id');
+
+    // Respaldo si las columnas temp_min/temp_max aún no se han agregado en Supabase
+    if (errSuc) {
+      const resBasico = await supabase
+        .from('sucursales')
+        .select('id, nombre, telefono_alerta, api_key_whatsapp')
+        .order('id');
+      data = resBasico.data;
+      errSuc = resBasico.error;
+    }
+
     if (!errSuc && data && data.length) {
       setSucursales(data.map((s) => (s.id === 2 ? { ...s, telefono_alerta: '+584169410586' } : s)));
     }
@@ -269,13 +291,17 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
   // Refresco cada 5 s + Realtime
   useEffect(() => {
     cargarDatos();
-    const t = setInterval(cargarDatos, REFRESCO_MS);
+    const t = setInterval(() => {
+      cargarDatos();
+      cargarSucursales();
+    }, REFRESCO_MS);
     let canal = null;
     try {
       canal = supabase
         .channel(`centinela-${sucursalId}-${Date.now()}-${Math.random().toString(36).slice(2)}`)
         .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'lecturas_sensor' }, () => cargarDatos())
         .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'eventos_alerta' }, () => cargarDatos())
+        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'sucursales' }, () => cargarSucursales())
         .subscribe();
     } catch (e) {
       console.warn('Realtime no disponible, se usa refresco cada 5 s', e);
@@ -284,7 +310,7 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
       clearInterval(t);
       if (canal) supabase.removeChannel(canal);
     };
-  }, [cargarDatos, sucursalId]);
+  }, [cargarDatos, cargarSucursales, sucursalId]);
 
   const ultima = lecturas.length ? lecturas[lecturas.length - 1] : null;
   const temp = ultima && ultima.temperatura !== null ? Number(ultima.temperatura) : null;
@@ -302,6 +328,19 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
       } catch {
         // Ignorar errores de localStorage
       }
+
+      setSucursales((prev) =>
+        prev.map((s) => (s.id === sucursalId ? { ...s, temp_min: nuevoMin, temp_max: nuevoMax } : s))
+      );
+
+      if (timerGuardarRangoRef.current) clearTimeout(timerGuardarRangoRef.current);
+      const idObjetivo = sucursalId;
+      timerGuardarRangoRef.current = setTimeout(async () => {
+        await supabase
+          .from('sucursales')
+          .update({ temp_min: nuevoMin, temp_max: nuevoMax })
+          .eq('id', idObjetivo);
+      }, 400);
     }
   };
 
@@ -669,13 +708,15 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
                 <span className="text-slate-200 font-mono">{sucursalActual.telefono_alerta || WHATSAPP_PHONE}</span>
               </p>
             </div>
-            <button
-              onClick={enviarPruebaWhatsApp}
-              disabled={enviando}
-              className="px-5 py-3 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold transition shadow-lg shadow-emerald-500/20 disabled:opacity-50"
-            >
-              {enviando ? 'Enviando...' : '📲 Enviar Alerta de Prueba'}
-            </button>
+            {sucursalId !== 1 && (
+              <button
+                onClick={enviarPruebaWhatsApp}
+                disabled={enviando}
+                className="px-5 py-3 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold transition shadow-lg shadow-emerald-500/20 disabled:opacity-50"
+              >
+                {enviando ? 'Enviando...' : '📲 Enviar Alerta de Prueba'}
+              </button>
+            )}
           </div>
 
           {/* Controles de prueba solo en nodos demo (Farmacia Norte / nuevos); Bodegón Central recibe datos reales del ESP32 */}
@@ -744,7 +785,9 @@ export default function Dashboard({ etiquetaUsuario, onSalir }) {
                 {eventos.length === 0 && (
                   <tr>
                     <td colSpan={3} className="py-4 text-center text-slate-500">
-                      Aún no hay alertas registradas. Pulsa “Enviar Alerta de Prueba” para probar.
+                      {sucursalId === 1
+                        ? 'Aún no hay alertas registradas para este nodo.'
+                        : 'Aún no hay alertas registradas. Pulsa “Enviar Alerta de Prueba” para probar.'}
                     </td>
                   </tr>
                 )}

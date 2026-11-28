@@ -13,7 +13,9 @@ CREATE TABLE sucursales (
   id               SERIAL PRIMARY KEY,
   nombre           TEXT NOT NULL,
   telefono_alerta  TEXT DEFAULT '+584125002119',
-  api_key_whatsapp TEXT DEFAULT '7650246'
+  api_key_whatsapp TEXT DEFAULT '7650246',
+  temp_min         FLOAT DEFAULT 2.0,
+  temp_max         FLOAT DEFAULT 8.0
 );
 
 INSERT INTO sucursales (nombre) VALUES
